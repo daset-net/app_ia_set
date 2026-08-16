@@ -32,12 +32,22 @@ async function initBrowser() {
     page = await browser.newPage();
     await page.setViewport({ width: 1280, height: 800 });
     
-    // Injetar cookies se existirem
+    // Injetar cookies via Variável de Ambiente (Recomendado no Easypanel) ou Arquivo
     try {
-        const cookiePath = path.join(__dirname, 'login_automatico', 'meta.ai.cookies.json');
-        if (fs.existsSync(cookiePath)) {
-            const cookiesString = fs.readFileSync(cookiePath, 'utf8');
-            const cookies = JSON.parse(cookiesString);
+        let cookies = null;
+        
+        if (process.env.META_COOKIES) {
+            console.log('Lendo cookies da variável de ambiente META_COOKIES...');
+            cookies = JSON.parse(process.env.META_COOKIES);
+        } else {
+            const cookiePath = path.join(__dirname, 'login_automatico', 'meta.ai.cookies.json');
+            if (fs.existsSync(cookiePath)) {
+                console.log('Lendo cookies do arquivo json...');
+                cookies = JSON.parse(fs.readFileSync(cookiePath, 'utf8'));
+            }
+        }
+        
+        if (cookies) {
             await page.setCookie(...cookies);
             console.log('Cookies injetados com sucesso!');
         }

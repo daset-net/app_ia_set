@@ -87,77 +87,94 @@ app.post('/api/chat', async (req, res) => {
                 // Para ser mais seguro, o ideal seria checar se já está ativo, mas como não temos a classe exata, clica se achar
                 // Se a regra é "mudar se estiver instantâneo", vamos assumir que clicar ativa.
                 try {
-                    btn.click();
-                    console.log('Modo pensativo clicado.');
-                } catch(e) {}
+    // Coloca a requisição na fila
+    const executeChat = async () => {
+        try {
+            const { prompt, newChat, clientId } = req.body;
+            if (!prompt) {
+                res.status(400).json({ error: 'O campo prompt é obrigatório.' });
+                return processNextInQueue();
             }
-        });
-        
-        await new Promise(r => setTimeout(r, 1000));
 
-        
-        const inputFound = await page.evaluate(() => {
-            const input = document.querySelector('div[contenteditable="true"]') || document.querySelector('textarea');
-            if (input) {
-                input.focus();
-                return true;
+            if (!page) throw new Error('Navegador não inicializado.');
+            
+            const logPrefix = clientId ? `[Cliente: ${clientId}]` : '[API]';
+            console.log(`${logPrefix} Processando nova requisição...`);
+
+            // Se for solicitado (ou se houver clientes diferentes), clica em "Nova Conversa" para limpar a tela
+            if (newChat !== false) {
+                console.log(`${logPrefix} Limpando o contexto (Nova Conversa)...`);
+                await page.evaluate(() => {
+                    const elements = Array.from(document.querySelectorAll('div, span, button'));
+                    const newChatBtn = elements.find(el => el.innerText && el.innerText.includes('Nova conversa'));
+                    if (newChatBtn) newChatBtn.click();
+                });
+                await new Promise(r => setTimeout(r, 1000));
             }
-            return false;
-        });
 
-        if (!inputFound) throw new Error("Não foi possível encontrar a caixa de texto da Meta AI.");
-
-        // Clica na caixa para garantir que o React registre o foco
-        await page.mouse.click(500, 700); // Clique genérico no meio inferior da tela como fallback
-        await page.evaluate(() => {
-            const input = document.querySelector('div[contenteditable="true"]') || document.querySelector('textarea');
-            if(input) input.click();
-        });
-
-        // 2. Digitar usando o teclado do puppeteer mais lentamente
-        await page.keyboard.type(prompt, { delay: 40 });
-        
-        // Espera o React processar o texto digitado
-        await new Promise(r => setTimeout(r, 1000));
-        
-        // Enviar (pressionar Enter)
-        await page.keyboard.press('Enter');
-        await new Promise(r => setTimeout(r, 1000));
-
-        // Tentar clicar no botão de enviar (caso o Enter tenha falhado na Meta AI)
-        await page.evaluate(() => {
-            const input = document.querySelector('div[contenteditable="true"]') || document.querySelector('textarea');
-            if (input) {
-                // Sobe alguns níveis para pegar o container da barra inferior
-                let parent = input.parentElement;
-                for (let i = 0; i < 6; i++) {
-                    if (!parent) break;
-                    const buttons = Array.from(parent.querySelectorAll('div[role="button"], button'));
-                    // Procura botão de send específico
-                    let sendBtn = buttons.find(b => {
-                        const label = (b.getAttribute('aria-label') || '').toLowerCase();
-                        return label.includes('send') || label.includes('enviar');
-                    });
-                    
-                    // Se não achou por label, pega o último botão com SVG (geralmente é o send)
-                    if (!sendBtn) {
-                        const svgBtns = buttons.filter(b => b.querySelector('svg'));
-                        if (svgBtns.length > 0) {
-                            sendBtn = svgBtns[svgBtns.length - 1];
-                        }
-                    }
-                    
-                    if (sendBtn) {
-                        sendBtn.click();
-                        break;
-                    }
-                    parent = parent.parentElement;
+            // 1. Procurar a caixa de texto e focar
+            console.log(`${logPrefix} Enviando prompt...`);
+            
+            const inputFound = await page.evaluate(() => {
+                const input = document.querySelector('div[contenteditable="true"]') || document.querySelector('textarea');
+                if (input) {
+                    input.focus();
+                    return true;
                 }
+                return false;
+            });
+
+            if (!inputFound) {
+                throw new Error("Não foi possível encontrar a caixa de texto da Meta AI.");
             }
-        });
-        
-        // Espera mais um pouco para o clique fazer efeito
-        await new Promise(r => setTimeout(r, 1500));
+
+            // Clica na caixa para garantir que o React registre o foco
+            await page.mouse.click(500, 700); 
+            await page.evaluate(() => {
+                const input = document.querySelector('div[contenteditable="true"]') || document.querySelector('textarea');
+                if(input) input.click();
+            });
+
+            // 2. Digitar usando o teclado do puppeteer mais lentamente
+            await page.keyboard.type(prompt, { delay: 40 });
+            
+            // Espera o React processar o texto digitado
+            await new Promise(r => setTimeout(r, 1000));
+            
+            // Enviar (pressionar Enter)
+            await page.keyboard.press('Enter');
+            await new Promise(r => setTimeout(r, 1000));
+
+            // Tentar clicar no botão de enviar (caso o Enter tenha falhado na Meta AI)
+            await page.evaluate(() => {
+                const input = document.querySelector('div[contenteditable="true"]') || document.querySelector('textarea');
+                if (input) {
+                    let parent = input.parentElement;
+                    for (let i = 0; i < 6; i++) {
+                        if (!parent) break;
+                        const buttons = Array.from(parent.querySelectorAll('div[role="button"], button'));
+                        let sendBtn = buttons.find(b => {
+                            const label = (b.getAttribute('aria-label') || '').toLowerCase();
+                            return label.includes('send') || label.includes('enviar');
+                        });
+                        
+                        if (!sendBtn) {
+                            const svgBtns = buttons.filter(b => b.querySelector('svg'));
+                            if (svgBtns.length > 0) {
+                                sendBtn = svgBtns[svgBtns.length - 1];
+                            }
+                        }
+                        
+                        if (sendBtn) {
+                            sendBtn.click();
+                            break;
+                        }
+                        parent = parent.parentElement;
+                    }
+                }
+            });
+            
+            await new Promise(r => setTimeout(r, 1500));
 
         // 3. Esperar a resposta ser gerada
         console.log('Aguardando resposta da Meta AI...');
@@ -266,9 +283,18 @@ app.post('/api/chat', async (req, res) => {
 
         res.json({ reply: finalResponse });
 
-    } catch (error) {
-        console.error('Erro no Puppeteer:', error);
-        res.status(500).json({ error: 'Erro ao interagir com o bot: ' + error.message });
+        } catch (error) {
+            console.error('Erro no Puppeteer:', error);
+            res.status(500).json({ error: 'Erro ao interagir com o bot: ' + error.message });
+        } finally {
+            processNextInQueue();
+        }
+    }; // Fim da função executeChat
+
+    // Adiciona na fila e inicia se estiver livre
+    requestQueue.push(executeChat);
+    if (!isProcessing) {
+        processNextInQueue();
     }
 });
 

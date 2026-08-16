@@ -163,29 +163,48 @@ app.post('/api/chat', async (req, res) => {
         
         // 4. Extração fina: Como pegar exatamente a última resposta do bot?
         finalResponse = await page.evaluate((userPrompt) => {
-            // Tenta pegar todas as divs que parecem ser mensagens.
-            // O Meta AI coloca a mensagem do usuário e do bot sequencialmente.
-            // Pegaremos o último bloco de texto grande que não contém o nosso prompt.
-            const allTextNodes = Array.from(document.querySelectorAll('div[dir="auto"]'));
+            const rawText = document.body.innerText;
             
-            // Filtra nós relevantes e ignora caixas muito curtas ou irrelevantes
-            const texts = allTextNodes.map(n => n.innerText).filter(t => t.length > 5);
+            // Tenta achar a última ocorrência da mensagem do usuário na tela
+            const promptLines = userPrompt.trim().split('\n');
+            const firstLineOfPrompt = promptLines[0].trim();
+            const lastIndex = rawText.lastIndexOf(firstLineOfPrompt);
+            
+            if (lastIndex !== -1) {
+                // Pega todo o texto que vem DEPOIS da mensagem do usuário
+                let afterPrompt = rawText.substring(lastIndex + userPrompt.length);
+                
+                const lines = afterPrompt.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+                
+                // Pula linhas iniciais muito curtas que costumam ser a interface ("Meta AI", horários, botões)
+                let startIndex = 0;
+                while (startIndex < lines.length && lines[startIndex].length < 25) {
+                    startIndex++;
+                }
+                
+                const finalStr = lines.slice(startIndex).join('\n\n');
+                
+                // Retorna o bloco final
+                if (finalStr.length > 10) return finalStr;
+                if (afterPrompt.trim().length > 10) return afterPrompt.trim();
+            }
+            
+            // Fallback se não conseguir quebrar pelo prompt
+            const allTextNodes = Array.from(document.querySelectorAll('p, span[dir="auto"], div[dir="auto"]'));
+            const texts = allTextNodes.map(n => n.innerText.trim()).filter(t => t.length > 30);
             
             if (texts.length > 0) {
-                // A última mensagem do assistente costuma ser o último texto longo
-                // Vamos pegar os últimos textos e tentar montar
-                // Ignorar o prompt do usuário se estiver no final (as vezes repete)
+                // Tenta não retornar o próprio prompt do usuário
                 for (let i = texts.length - 1; i >= 0; i--) {
-                    if (texts[i].includes(userPrompt)) {
-                        continue;
-                    }
-                    if (texts[i].length > 20) {
+                    if (!texts[i].includes(firstLineOfPrompt)) {
                         return texts[i];
                     }
                 }
-                return texts[texts.length - 1]; // fallback
+                return texts[texts.length - 1]; 
             }
-            return "Não foi possível extrair a resposta precisa.";
+            
+            // Último recurso: últimos 600 caracteres da tela
+            return rawText.length > 600 ? rawText.substring(rawText.length - 600) : rawText;
         }, prompt);
 
 

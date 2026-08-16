@@ -286,6 +286,15 @@ async function enviarPromptMetaAi(prompt, newChat, clientId) {
     }, prompt);
 
     console.log(`${logPrefix} Resposta obtida (${finalResponse.length} caracteres).`);
+    
+    // Salva para debug
+    lastDebugInfo = {
+        timestamp: new Date().toISOString(),
+        response: finalResponse,
+        // Evita salvar rawText gigante aqui na memória, salva só tamanho
+        length: finalResponse.length
+    };
+
     return finalResponse;
 }
 
@@ -464,6 +473,26 @@ app.post('/api/reset', autenticarToken, async (req, res) => {
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
+});
+
+app.get('/api/reset', async (req, res) => {
+    try {
+        if (page) {
+            await page.goto('https://www.meta.ai/', { waitUntil: 'networkidle2', timeout: 60000 });
+            res.json({ success: true, message: 'Página recarregada com sucesso.' });
+        } else {
+            res.status(400).json({ success: false, error: 'Navegador não está rotando.' });
+        }
+    } catch (e) {
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
+
+let lastDebugInfo = { timestamp: null, response: null, rawText: null };
+
+// Rota de debug para diagnosticar o extrator
+app.get('/v1/debug', (req, res) => {
+    res.json(lastDebugInfo);
 });
 
 // =========================================

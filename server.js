@@ -306,14 +306,14 @@ function mensagensParaPrompt(messages) {
         if (!content) continue;
 
         if (role === 'system') {
-            partes.push('[Instruções do Sistema]\n' + content);
+            partes.push('Contexto e Regras do Atendimento:\n' + content);
         } else if (role === 'user') {
-            partes.push('[Cliente]\n' + content);
+            partes.push('Cliente: ' + content);
         } else if (role === 'assistant') {
-            partes.push('[Assistente]\n' + content);
+            partes.push('Você (Assistente): ' + content);
         } else if (role === 'tool') {
             // Resultado de uma chamada de ferramenta — inclui como contexto
-            partes.push('[Resultado de Consulta]\n' + content);
+            partes.push('Informação Adicional do Sistema:\n' + content);
         }
     }
 

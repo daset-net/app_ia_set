@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>App IA Set - Meta AI</title>
+    <link rel="stylesheet" href="style.css">
+    <!-- Vue 3 -->
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div id="app" class="container">
+        <header>
+            <h1>App IA Set (Meta AI)</h1>
+            <p>Converse com a Meta AI de forma automatizada</p>
+        </header>
+        
+        <main>
+            <div class="chat-container">
+                <div class="messages" ref="messagesContainer">
+                    <div v-for="(msg, index) in chatHistory" :key="index" :class="['message', msg.role]">
+                        <div class="bubble">{{ msg.content }}</div>
+                    </div>
+                    <div v-if="isLoading" class="message bot typing">
+                        <div class="bubble">Pensando...</div>
+                    </div>
+                </div>
+
+                <div v-if="error" class="error-banner">
+                    {{ error }}
+                </div>
+
+                <div class="input-area">
+                    <textarea 
+                        v-model="prompt" 
+                        placeholder="Pergunte à Meta AI..." 
+                        @keydown.enter.prevent="sendMessage"
+                        :disabled="isLoading"
+                    ></textarea>
+                    <button @click="sendMessage" :disabled="isLoading || !prompt.trim()">
+                        Enviar
+                    </button>
+                    <button @click="resetConversation" class="btn-reset" :disabled="isLoading" title="Nova Conversa">
+                        🔄
+                    </button>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>

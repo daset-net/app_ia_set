@@ -143,11 +143,17 @@ async function enviarPromptMetaAi(prompt, newChat, clientId) {
         if (input) input.click();
     });
 
-    // 2. Digitar usando o teclado do puppeteer mais lentamente
-    await page.keyboard.type(prompt, { delay: 40 });
+    // 2. Inserir o texto instantaneamente (evita timeout em prompts longos com histórico)
+    await page.evaluate((text) => {
+        const input = document.querySelector('div[contenteditable="true"]') || document.querySelector('textarea');
+        if (input) {
+            // execCommand 'insertText' simula um "colar" e dispara eventos onChange do React
+            document.execCommand('insertText', false, text);
+        }
+    }, prompt);
 
-    // Espera o React processar o texto digitado
-    await new Promise(r => setTimeout(r, 1000));
+    // Espera o React processar o texto colado
+    await new Promise(r => setTimeout(r, 500));
 
     // Enviar (pressionar Enter)
     await page.keyboard.press('Enter');

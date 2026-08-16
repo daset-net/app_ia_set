@@ -167,26 +167,33 @@ app.post('/api/chat', async (req, res) => {
         let hasStartedAnswering = false;
         let finalResponse = ''; // Definindo a variável corretamente
 
-        // Espera no máximo 90 segundos (45 * 2s)
-        for (let i = 0; i < 45; i++) {
+        // Espera no máximo 120 segundos (60 * 2s)
+        for (let i = 0; i < 60; i++) {
             await new Promise(r => setTimeout(r, 2000));
             
             const currentResponse = await page.evaluate(() => document.body.innerText);
+            const isThinking = currentResponse.includes('Thinking\n') || currentResponse.includes('Pensando\n') || currentResponse.includes('Thinking...\n');
 
             if (currentResponse.length > lastTextLength) {
-                if (lastTextLength > 0) hasStartedAnswering = true;
+                if (lastTextLength > 0 && !isThinking) hasStartedAnswering = true;
                 lastTextLength = currentResponse.length;
                 unchangedCount = 0; // Reset, está gerando texto
             } else if (currentResponse.length === lastTextLength && currentResponse.length > 0) {
                 unchangedCount++;
             }
 
-            // Se já começou a responder e não mudou por 6s (3 ciclos), quebra.
-            // Se NÃO começou a responder ainda, espera até 30s (15 ciclos) antes de desistir.
-            if (hasStartedAnswering && unchangedCount >= 3) {
+            // Se o robô estiver "Pensando", damos mais tolerância (não quebramos o loop cedo)
+            if (isThinking) {
+                unchangedCount = 0; // Impede que o timeout de ociosidade dispare enquanto "pensa"
+            }
+
+            // Se já começou a responder (e não está mais pensando) e não mudou por 8s (4 ciclos), quebra.
+            if (hasStartedAnswering && !isThinking && unchangedCount >= 4) {
                 break;
             }
-            if (!hasStartedAnswering && unchangedCount >= 15) {
+            
+            // Se NÃO começou a responder ainda, espera até 40s (20 ciclos) antes de desistir.
+            if (!hasStartedAnswering && unchangedCount >= 20) {
                 console.log('Timeout: A resposta não começou a ser gerada.');
                 break;
             }
@@ -204,6 +211,24 @@ app.post('/api/chat', async (req, res) => {
             if (lastIndex !== -1) {
                 // Pega todo o texto que vem DEPOIS da mensagem do usuário
                 let afterPrompt = rawText.substring(lastIndex + userPrompt.length);
+                
+                // Limpeza agressiva do lixo de UI do Meta AI que fica no final da tela
+                const cutoffs = [
+                    'Ask Meta AI...', 
+                    'Pergunte à Meta AI...', 
+                    'Message Meta AI...', 
+                    'Thinking\n',
+                    'Pensando\n',
+                    'Command Palette',
+                    'Search for a command'
+                ];
+                
+                for (const cutoff of cutoffs) {
+                    const cutIndex = afterPrompt.indexOf(cutoff);
+                    if (cutIndex !== -1) {
+                        afterPrompt = afterPrompt.substring(0, cutIndex);
+                    }
+                }
                 
                 const lines = afterPrompt.split('\n').map(l => l.trim()).filter(l => l.length > 0);
                 

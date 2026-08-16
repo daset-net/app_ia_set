@@ -204,12 +204,12 @@ async function enviarPromptMetaAi(prompt, newChat, clientId) {
         const currentResponse = await page.evaluate(() => document.body.innerText);
         const isThinking = currentResponse.includes('Thinking\n') || currentResponse.includes('Pensando\n') || currentResponse.includes('Thinking...\n');
 
-        if (currentResponse.length > lastTextLength) {
+        if (currentResponse.length > lastTextLength + 5) {
             if (lastTextLength > 0 && !isThinking) hasStartedAnswering = true;
             lastTextLength = currentResponse.length;
-            unchangedCount = 0; // Reset, está gerando texto
-        } else if (currentResponse.length === lastTextLength && currentResponse.length > 0) {
-            unchangedCount++;
+            unchangedCount = 0; // Reset, texto crescendo de verdade
+        } else if (Math.abs(currentResponse.length - lastTextLength) <= 5) {
+            unchangedCount++; // Texto parou ou está só piscando cursor
         }
 
         // Se o robô estiver "Pensando", damos mais tolerância (não quebramos o loop cedo)

@@ -229,67 +229,59 @@ async function enviarPromptMetaAi(prompt, newChat, clientId) {
         }
     }
 
-    // 4. Extração fina da resposta
+    // 4. Extração fina da resposta usando a estrutura do DOM
     const finalResponse = await page.evaluate((userPrompt) => {
-        const rawText = document.body.innerText;
-
-        // Tenta achar a última ocorrência da mensagem do usuário na tela
-        const promptLines = userPrompt.trim().split('\n');
-        const firstLineOfPrompt = promptLines[0].trim();
-        const lastIndex = rawText.lastIndexOf(firstLineOfPrompt);
-
-        if (lastIndex !== -1) {
-            // Pega todo o texto que vem DEPOIS da mensagem do usuário
-            let afterPrompt = rawText.substring(lastIndex + userPrompt.length);
-
-            // Limpeza agressiva do lixo de UI do Meta AI que fica no final da tela
-            const cutoffs = [
-                'Ask Meta AI...',
-                'Pergunte à Meta AI...',
-                'Message Meta AI...',
-                'Thinking\n',
-                'Pensando\n',
-                'Command Palette',
-                'Search for a command'
-            ];
-
-            for (const cutoff of cutoffs) {
-                const cutIndex = afterPrompt.indexOf(cutoff);
-                if (cutIndex !== -1) {
-                    afterPrompt = afterPrompt.substring(0, cutIndex);
+        // Encontra todos os elementos que contêm o texto do prompt original
+        // O prompt original começa com "Contexto e Regras do Atendimento:"
+        const promptMarker = "Contexto e Regras do Atendimento:";
+        
+        // Pega todas as divs na tela
+        const allDivs = Array.from(document.querySelectorAll('div[dir="auto"]'));
+        
+        // Acha o último elemento que é a mensagem do usuário (que contém o marcador)
+        let lastUserMessageIndex = -1;
+        for (let i = allDivs.length - 1; i >= 0; i--) {
+            if (allDivs[i].innerText && allDivs[i].innerText.includes(promptMarker)) {
+                lastUserMessageIndex = i;
+                break;
+            }
+        }
+        
+        if (lastUserMessageIndex !== -1) {
+            // A resposta da IA são as divs [dir="auto"] que vêm DEPOIS da mensagem do usuário
+            // Vamos pegar todas as divs subsequentes até acabar ou encontrar outra mensagem do usuário
+            let aiTextParts = [];
+            for (let i = lastUserMessageIndex + 1; i < allDivs.length; i++) {
+                const text = allDivs[i].innerText.trim();
+                // Ignora textos de UI curtos ou placeholders
+                if (text.length > 0 && !text.includes('Pergunte à Meta AI') && !text.includes(promptMarker)) {
+                    aiTextParts.push(text);
                 }
             }
-
-            const lines = afterPrompt.split('\n').map(l => l.trim()).filter(l => l.length > 0);
-
-            // Pula linhas iniciais muito curtas que costumam ser a interface ("Meta AI", horários, botões)
-            let startIndex = 0;
-            while (startIndex < lines.length && lines[startIndex].length < 25) {
-                startIndex++;
+            
+            if (aiTextParts.length > 0) {
+                // Junta todas as partes. Remove duplicações (as vezes divs aninhadas repetem texto)
+                const uniqueParts = [...new Set(aiTextParts)];
+                // Filtra o botão "Mostrar raciocínio"
+                const cleanedParts = uniqueParts.filter(p => !p.includes('Mostrar raciocínio') && !p.includes('Thinking'));
+                
+                // Se sobrar algo, retorna
+                if (cleanedParts.length > 0) {
+                    return cleanedParts.join('\n\n');
+                }
             }
-
-            const finalStr = lines.slice(startIndex).join('\n\n');
-
-            // Retorna o bloco final
-            if (finalStr.length > 10) return finalStr;
-            if (afterPrompt.trim().length > 10) return afterPrompt.trim();
         }
 
-        // Fallback se não conseguir quebrar pelo prompt
-        const allTextNodes = Array.from(document.querySelectorAll('p, span[dir="auto"], div[dir="auto"]'));
-        const texts = allTextNodes.map(n => n.innerText.trim()).filter(t => t.length > 30);
-
+        // Fallback: se não achar a mensagem do usuário, pega os últimos parágrafos grandes da tela
+        const allParagraphs = Array.from(document.querySelectorAll('p, div[dir="auto"] > span'));
+        const texts = allParagraphs.map(p => p.innerText.trim()).filter(t => t.length > 40 && !t.includes(promptMarker));
+        
         if (texts.length > 0) {
-            // Tenta não retornar o próprio prompt do usuário
-            for (let i = texts.length - 1; i >= 0; i--) {
-                if (!texts[i].includes(firstLineOfPrompt)) {
-                    return texts[i];
-                }
-            }
-            return texts[texts.length - 1];
+            // Pega os últimos 3 textos longos (provavelmente formam a última resposta)
+            return texts.slice(-3).join('\n\n');
         }
 
-        // Último recurso: últimos 600 caracteres da tela
+        const rawText = document.body.innerText;
         return rawText.length > 600 ? rawText.substring(rawText.length - 600) : rawText;
     }, prompt);
 

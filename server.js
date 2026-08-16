@@ -19,7 +19,7 @@ let page;
 async function initBrowser() {
     console.log('Iniciando Puppeteer Stealth para Meta AI...');
     browser = await puppeteer.launch({
-        headless: false, // Deixando false para o usuário poder logar se necessário na primeira vez
+        headless: "new", // Alterado para "new" (true) para rodar no Docker do Easypanel sem crashar
         userDataDir: path.join(__dirname, 'user_data'), // Salva a sessão
         args: [
             '--no-sandbox',

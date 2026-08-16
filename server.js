@@ -7,6 +7,19 @@ const fs = require('fs');
 
 puppeteer.use(StealthPlugin());
 
+// Intercepta os logs para colocar a data e hora no final (padrão brasileiro)
+const originalConsoleLog = console.log;
+console.log = function(...args) {
+    const now = new Date();
+    // Subtrai 3 horas para fuso de Brasília caso o servidor do Easypanel esteja em UTC
+    const offset = -3;
+    const localTime = new Date(now.getTime() + offset * 3600 * 1000);
+    
+    const pad = (n) => n.toString().padStart(2, '0');
+    const ts = `${pad(localTime.getUTCDate())}/${pad(localTime.getUTCMonth()+1)}/${localTime.getUTCFullYear()} ${pad(localTime.getUTCHours())}:${pad(localTime.getUTCMinutes())}:${pad(localTime.getUTCSeconds())}`;
+    
+    originalConsoleLog(...args, ts);
+};
 const app = express();
 const port = process.env.PORT || 3000;
 

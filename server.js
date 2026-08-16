@@ -3,6 +3,7 @@ const cors = require('cors');
 const puppeteer = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 const path = require('path');
+const fs = require('fs');
 
 puppeteer.use(StealthPlugin());
 
@@ -30,6 +31,19 @@ async function initBrowser() {
     
     page = await browser.newPage();
     await page.setViewport({ width: 1280, height: 800 });
+    
+    // Injetar cookies se existirem
+    try {
+        const cookiePath = path.join(__dirname, 'login_automatico', 'meta.ai.cookies.json');
+        if (fs.existsSync(cookiePath)) {
+            const cookiesString = fs.readFileSync(cookiePath, 'utf8');
+            const cookies = JSON.parse(cookiesString);
+            await page.setCookie(...cookies);
+            console.log('Cookies injetados com sucesso!');
+        }
+    } catch (e) {
+        console.log('Aviso: Erro ao ler cookies (ignorando):', e.message);
+    }
     
     console.log('Acessando meta.ai...');
     await page.goto('https://www.meta.ai/', { waitUntil: 'networkidle2', timeout: 60000 });

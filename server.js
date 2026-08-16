@@ -95,53 +95,69 @@ app.post('/api/chat', async (req, res) => {
         
         await new Promise(r => setTimeout(r, 1000));
 
-        // 2. Preencher o texto (procura por textarea ou contenteditable)
-        const inputHandled = await page.evaluate((text) => {
-            // Tenta achar a textarea pelo placeholder
-            let input = document.querySelector('textarea[placeholder*="Pergunte"]');
-            if (!input) input = document.querySelector('textarea');
-            if (!input) input = document.querySelector('div[contenteditable="true"]');
-            
+        
+        const inputFound = await page.evaluate(() => {
+            const input = document.querySelector('div[contenteditable="true"]') || document.querySelector('textarea');
             if (input) {
                 input.focus();
-                // Usando execCommand para inserir texto como se fosse digitado
-                document.execCommand('insertText', false, text);
                 return true;
             }
             return false;
-        }, prompt);
+        });
 
-        if (!inputHandled) {
-            throw new Error("Não foi possível encontrar a caixa de texto da Meta AI.");
-        }
+        if (!inputFound) throw new Error("Não foi possível encontrar a caixa de texto da Meta AI.");
 
-        await new Promise(r => setTimeout(r, 500));
+        // Clica na caixa para garantir que o React registre o foco
+        await page.mouse.click(500, 700); // Clique genérico no meio inferior da tela como fallback
+        await page.evaluate(() => {
+            const input = document.querySelector('div[contenteditable="true"]') || document.querySelector('textarea');
+            if(input) input.click();
+        });
 
+        // 2. Digitar usando o teclado do puppeteer mais lentamente
+        await page.keyboard.type(prompt, { delay: 40 });
+        
+        // Espera o React processar o texto digitado
+        await new Promise(r => setTimeout(r, 1000));
+        
         // Enviar (pressionar Enter)
         await page.keyboard.press('Enter');
-        await new Promise(r => setTimeout(r, 500));
+        await new Promise(r => setTimeout(r, 1000));
 
-        // Tentar clicar no botão de enviar (caso o Enter não funcione na Meta AI)
-        const clickedSend = await page.evaluate(() => {
+        // Tentar clicar no botão de enviar (caso o Enter tenha falhado na Meta AI)
+        await page.evaluate(() => {
             const input = document.querySelector('div[contenteditable="true"]') || document.querySelector('textarea');
             if (input) {
                 // Sobe alguns níveis para pegar o container da barra inferior
                 let parent = input.parentElement;
-                for (let i=0; i<4; i++) {
-                    if (parent) parent = parent.parentElement;
-                }
-                if (parent) {
+                for (let i = 0; i < 6; i++) {
+                    if (!parent) break;
                     const buttons = Array.from(parent.querySelectorAll('div[role="button"], button'));
-                    // O botão de enviar costuma ser o último SVG clicável ou conter um ícone de seta
-                    if (buttons.length > 0) {
-                        const sendBtn = buttons[buttons.length - 1];
-                        sendBtn.click();
-                        return true;
+                    // Procura botão de send específico
+                    let sendBtn = buttons.find(b => {
+                        const label = (b.getAttribute('aria-label') || '').toLowerCase();
+                        return label.includes('send') || label.includes('enviar');
+                    });
+                    
+                    // Se não achou por label, pega o último botão com SVG (geralmente é o send)
+                    if (!sendBtn) {
+                        const svgBtns = buttons.filter(b => b.querySelector('svg'));
+                        if (svgBtns.length > 0) {
+                            sendBtn = svgBtns[svgBtns.length - 1];
+                        }
                     }
+                    
+                    if (sendBtn) {
+                        sendBtn.click();
+                        break;
+                    }
+                    parent = parent.parentElement;
                 }
             }
-            return false;
         });
+        
+        // Espera mais um pouco para o clique fazer efeito
+        await new Promise(r => setTimeout(r, 1500));
 
         // 3. Esperar a resposta ser gerada
         console.log('Aguardando resposta da Meta AI...');

@@ -119,44 +119,59 @@ app.post('/api/chat', async (req, res) => {
 
         // Enviar (pressionar Enter)
         await page.keyboard.press('Enter');
+        await new Promise(r => setTimeout(r, 500));
+
+        // Tentar clicar no botão de enviar (caso o Enter não funcione na Meta AI)
+        const clickedSend = await page.evaluate(() => {
+            const input = document.querySelector('div[contenteditable="true"]') || document.querySelector('textarea');
+            if (input) {
+                // Sobe alguns níveis para pegar o container da barra inferior
+                let parent = input.parentElement;
+                for (let i=0; i<4; i++) {
+                    if (parent) parent = parent.parentElement;
+                }
+                if (parent) {
+                    const buttons = Array.from(parent.querySelectorAll('div[role="button"], button'));
+                    // O botão de enviar costuma ser o último SVG clicável ou conter um ícone de seta
+                    if (buttons.length > 0) {
+                        const sendBtn = buttons[buttons.length - 1];
+                        sendBtn.click();
+                        return true;
+                    }
+                }
+            }
+            return false;
+        });
 
         // 3. Esperar a resposta ser gerada
-        // Vamos monitorar a página até a resposta parar de crescer (esperando 3 segundos sem mudança no texto da página)
         console.log('Aguardando resposta da Meta AI...');
         
         let lastTextLength = 0;
         let unchangedCount = 0;
-        let finalResponse = '';
+        let hasStartedAnswering = false;
+        let finalResponse = ''; // Definindo a variável corretamente
 
-        // Espera no máximo 60 segundos
-        for (let i = 0; i < 30; i++) {
+        // Espera no máximo 90 segundos (45 * 2s)
+        for (let i = 0; i < 45; i++) {
             await new Promise(r => setTimeout(r, 2000));
             
-            const currentResponse = await page.evaluate(() => {
-                // Tenta extrair todas as mensagens do bot. Geralmente elas estão em divs específicas.
-                // Como não sabemos a classe, pegaremos a última bolha grande de texto que não foi a nossa pergunta
-                // ou simplesmente pegaremos a mudança no texto da página
-                
-                // Uma estratégia melhor é achar elementos que possuam muito texto gerado
-                // Vamos tentar achar a última resposta do assistente (geralmente dentro de um article ou div grande)
-                const paragraphs = Array.from(document.querySelectorAll('p, span[dir="auto"], div[dir="auto"]'));
-                if (paragraphs.length === 0) return '';
-                
-                // Pega os últimos elementos de texto e concatena (simplificação heurística)
-                // O Meta AI geralmente usa roles de "article" ou divs bem aninhadas.
-                // Vamos pegar o texto visível e tentar separar.
-                return document.body.innerText;
-            });
+            const currentResponse = await page.evaluate(() => document.body.innerText);
 
             if (currentResponse.length > lastTextLength) {
+                if (lastTextLength > 0) hasStartedAnswering = true;
                 lastTextLength = currentResponse.length;
-                unchangedCount = 0; // reset
-            } else if (currentResponse.length > 0 && currentResponse.length === lastTextLength) {
+                unchangedCount = 0; // Reset, está gerando texto
+            } else if (currentResponse.length === lastTextLength && currentResponse.length > 0) {
                 unchangedCount++;
             }
 
-            // Se o texto não mudou por 6 segundos (3 iterações de 2s)
-            if (unchangedCount >= 3) {
+            // Se já começou a responder e não mudou por 6s (3 ciclos), quebra.
+            // Se NÃO começou a responder ainda, espera até 30s (15 ciclos) antes de desistir.
+            if (hasStartedAnswering && unchangedCount >= 3) {
+                break;
+            }
+            if (!hasStartedAnswering && unchangedCount >= 15) {
+                console.log('Timeout: A resposta não começou a ser gerada.');
                 break;
             }
         }

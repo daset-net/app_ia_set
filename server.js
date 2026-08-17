@@ -353,6 +353,8 @@ function mensagensParaPrompt(messages) {
         }
     }
 
+    partes.push('--- FIM DO HISTÓRICO ---\n\nBaseado nas regras e no histórico acima, escreva APENAS a próxima fala do Assistente. Responda diretamente à última mensagem do Cliente. Não repita saudações se já tiver cumprimentado o cliente no histórico, continue a conversa naturalmente. Não inclua os rótulos "Você:" ou "Assistente:" na sua resposta final.');
+
     return partes.join('\n\n');
 }
 

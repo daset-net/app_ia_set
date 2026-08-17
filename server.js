@@ -125,12 +125,13 @@ async function enviarPromptMetaAi(prompt, newChat, clientId) {
     // Se for solicitado (ou se houver clientes diferentes), clica em "Nova Conversa" para limpar a tela
     if (newChat !== false) {
         console.log(`${logPrefix} Limpando o contexto (Nova Conversa)...`);
-        await page.evaluate(() => {
-            const elements = Array.from(document.querySelectorAll('div, span, button'));
-            const newChatBtn = elements.find(el => el.innerText && el.innerText.includes('Nova conversa'));
-            if (newChatBtn) newChatBtn.click();
-        });
-        await new Promise(r => setTimeout(r, 1000));
+        try {
+            // Ir para a raiz força o Meta AI a sair da conversa atual (/c/...) e abrir uma nova
+            await page.goto('https://www.meta.ai/', { waitUntil: 'networkidle2' });
+            await new Promise(r => setTimeout(r, 1000));
+        } catch(e) {
+            console.log(`${logPrefix} Erro ao limpar contexto:`, e.message);
+        }
     }
 
     // 1. Procurar a caixa de texto e focar

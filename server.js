@@ -126,9 +126,24 @@ async function enviarPromptMetaAi(prompt, newChat, clientId) {
     if (newChat !== false) {
         console.log(`${logPrefix} Limpando o contexto (Nova Conversa)...`);
         try {
-            // Ir para a raiz força o Meta AI a sair da conversa atual (/c/...) e abrir uma nova
-            await page.goto('https://www.meta.ai/', { waitUntil: 'networkidle2' });
+            // Tenta primeiro o atalho de teclado (muito mais rápido que recarregar a página inteira)
+            await page.keyboard.down('Control');
+            await page.keyboard.down('Shift');
+            await page.keyboard.press('KeyO');
+            await page.keyboard.up('Shift');
+            await page.keyboard.up('Control');
             await new Promise(r => setTimeout(r, 1000));
+            
+            // Verifica se o atalho funcionou (a URL deve mudar de /c/... para raiz)
+            // Ou apenas dá um goto caso continue na mesma tela
+            const currentUrl = page.url();
+            if (currentUrl.includes('/c/')) {
+                console.log(`${logPrefix} Atalho falhou, forçando reload da página...`);
+                await page.goto('https://www.meta.ai/', { waitUntil: 'networkidle2' });
+                await new Promise(r => setTimeout(r, 1000));
+            } else {
+                console.log(`${logPrefix} Nova conversa iniciada via atalho de teclado.`);
+            }
         } catch(e) {
             console.log(`${logPrefix} Erro ao limpar contexto:`, e.message);
         }

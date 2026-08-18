@@ -127,10 +127,9 @@ async function initBrowser() {
 }
 
 // =========================================
-// =========================================
 // NÚCLEO: ENVIAR PROMPT AO META AI E OBTER RESPOSTA
 // Toda a interação com o Puppeteer está concentrada aqui.
-// Otimizado para captura imediata e sem atalhos indesejados.
+// Otimizado para captura estrita apenas da resposta real da Meta AI.
 // =========================================
 async function enviarPromptMetaAi(prompt, newChat, clientId) {
     if (!page) throw new Error('Navegador não inicializado.');
@@ -138,12 +137,12 @@ async function enviarPromptMetaAi(prompt, newChat, clientId) {
     const logPrefix = clientId ? `[Cliente: ${clientId}]` : '[API]';
     console.log(`${logPrefix} Processando requisição...`);
 
-    // Fecha qualquer popup/modal que possa estar aberto
+    // Fecha qualquer popup/modal aberto
     try {
         await page.keyboard.press('Escape');
     } catch(e) {}
 
-    // Limpa o contexto (Nova Conversa) rapidamente se estiver em chat anterior
+    // Limpa o contexto (Nova Conversa) se estiver em chat anterior
     if (newChat !== false) {
         console.log(`${logPrefix} Verificando contexto (Nova Conversa)...`);
         try {
@@ -184,7 +183,7 @@ async function enviarPromptMetaAi(prompt, newChat, clientId) {
         inputFound = await page.evaluate(() => {
             const inputs = Array.from(document.querySelectorAll('div[contenteditable="true"], textarea, div[role="textbox"]'));
             const mainInput = inputs.find(el => {
-                const txt = (el.innerText || el.getAttribute('placeholder') || '').toLowerCase();
+                const txt = (el.innerText || el.getAttribute('placeholder') || el.getAttribute('data-placeholder') || '').toLowerCase();
                 return !txt.includes('search') && !txt.includes('comando');
             }) || inputs[inputs.length - 1];
 
@@ -231,7 +230,7 @@ async function enviarPromptMetaAi(prompt, newChat, clientId) {
     await page.evaluate((text) => {
         const inputs = Array.from(document.querySelectorAll('div[contenteditable="true"], textarea, div[role="textbox"]'));
         const mainInput = inputs.find(el => {
-            const txt = (el.innerText || el.getAttribute('placeholder') || '').toLowerCase();
+            const txt = (el.innerText || el.getAttribute('placeholder') || el.getAttribute('data-placeholder') || '').toLowerCase();
             return !txt.includes('search') && !txt.includes('comando');
         }) || inputs[inputs.length - 1];
 
@@ -239,41 +238,67 @@ async function enviarPromptMetaAi(prompt, newChat, clientId) {
             mainInput.focus();
             document.execCommand('selectAll', false, null);
             document.execCommand('insertText', false, text);
+            mainInput.dispatchEvent(new Event('input', { bubbles: true }));
         }
     }, prompt);
 
-    await new Promise(r => setTimeout(r, 100));
+    await new Promise(r => setTimeout(r, 150));
 
     // 3. Enviar (Enter)
     await page.keyboard.press('Enter');
-    await new Promise(r => setTimeout(r, 200));
+    await new Promise(r => setTimeout(r, 250));
 
     // Fallback: clicar no botão de envio
     await page.evaluate(() => {
         const buttons = Array.from(document.querySelectorAll('button, div[role="button"]'));
         const sendBtn = buttons.find(b => {
             const label = (b.getAttribute('aria-label') || '').toLowerCase();
-            return label.includes('send') || label.includes('enviar') || label.includes('enviar mensagem');
-        });
+            return (label.includes('send') || label.includes('enviar') || label.includes('submit')) && !b.disabled;
+        }) || buttons.find(b => b.querySelector('svg path') && !b.disabled && b.offsetWidth < 60 && b.offsetHeight < 60);
 
-        if (sendBtn && !sendBtn.disabled) {
+        if (sendBtn) {
             sendBtn.click();
         }
     });
 
-    // 4. Aguardar a resposta com polling rápido (200ms) e captura imediata
+    // 4. Aguardar a resposta com polling rápido e isolamento estrito
     console.log(`${logPrefix} Aguardando resposta da Meta AI...`);
 
     let lastLength = 0;
     let unchangedCount = 0;
     let hasStarted = false;
-    const checkIntervalMs = 200;
-    const maxWaitCycles = 150; // máx 30s
+    const checkIntervalMs = 250;
+    const maxWaitCycles = 120; // 30s máx
+
+    const bannedPhrases = [
+        'where should we start',
+        'try meta ai',
+        'ask anything',
+        'take action',
+        'create images',
+        'explain what a data center is',
+        'get today\'s top headlines',
+        'audit my paid subscriptions',
+        'plan a perfect saturday',
+        'plan a korean bbq dinner',
+        'recap calendar and email',
+        'search for a command',
+        'pergunte à meta ai',
+        'ask meta ai',
+        'mostrar raciocínio',
+        'thinking',
+        'pensando'
+    ];
+
+    let finalResponse = '';
 
     for (let i = 0; i < maxWaitCycles; i++) {
         await new Promise(r => setTimeout(r, checkIntervalMs));
 
-        const status = await page.evaluate((cleanPrompt) => {
+        const extracted = await page.evaluate((userPrompt, bannedList) => {
+            const cleanPrompt = (userPrompt || '').trim();
+            const promptSnippet = cleanPrompt.length > 15 ? cleanPrompt.substring(0, 15) : cleanPrompt;
+
             const bodyText = document.body.innerText || '';
             const isThinking = bodyText.includes('Thinking\n') || 
                                bodyText.includes('Pensando\n') || 
@@ -281,36 +306,72 @@ async function enviarPromptMetaAi(prompt, newChat, clientId) {
                                bodyText.includes('Pensando...');
 
             const buttons = Array.from(document.querySelectorAll('button, div[role="button"]'));
-            const isGeneratingBtn = buttons.some(b => {
+            const isGenerating = buttons.some(b => {
                 const aria = (b.getAttribute('aria-label') || '').toLowerCase();
                 const text = (b.innerText || '').toLowerCase();
                 return aria.includes('stop') || aria.includes('parar') || text.includes('stop') || text.includes('parar');
             });
 
-            let currentText = bodyText;
-            const snippet = cleanPrompt ? cleanPrompt.substring(0, 25) : '';
-            if (snippet && bodyText.includes(snippet)) {
-                const idx = bodyText.lastIndexOf(snippet);
-                currentText = bodyText.substring(idx + snippet.length);
+            // Isola apenas o conteúdo fora de nav e aside
+            const navElements = Array.from(document.querySelectorAll('nav, aside, [role="navigation"]'));
+            const isNav = (el) => navElements.some(nav => nav.contains(el));
+
+            const main = document.querySelector('main, [role="main"]') || document.body;
+            const elements = Array.from(main.querySelectorAll('div[dir="auto"], p'));
+            const chatElements = elements.filter(el => !isNav(el));
+
+            // Acha o índice da mensagem do usuário
+            let userIdx = -1;
+            if (promptSnippet) {
+                for (let idx = chatElements.length - 1; idx >= 0; idx--) {
+                    const txt = (chatElements[idx].innerText || '').trim();
+                    if (txt === cleanPrompt || txt.includes(promptSnippet)) {
+                        userIdx = idx;
+                        break;
+                    }
+                }
             }
 
-            // Ignora o texto do modal de comando se existir
-            currentText = currentText.replace('Search for a command to run...', '').trim();
+            let responseText = '';
+            if (userIdx !== -1) {
+                let parts = [];
+                for (let idx = userIdx + 1; idx < chatElements.length; idx++) {
+                    const txt = (chatElements[idx].innerText || '').trim();
+                    if (!txt || txt === cleanPrompt || txt.includes(promptSnippet)) continue;
+                    const lower = txt.toLowerCase();
+                    if (bannedList.some(b => lower.includes(b))) continue;
+
+                    parts.push(txt);
+                }
+
+                if (parts.length > 0) {
+                    const unique = [...new Set(parts)];
+                    responseText = unique.join('\n\n');
+                }
+            } else {
+                const valid = chatElements
+                    .map(el => (el.innerText || '').trim())
+                    .filter(t => t.length > 10 && t !== cleanPrompt && !bannedList.some(b => t.toLowerCase().includes(b)));
+
+                if (valid.length > 0) {
+                    responseText = [...new Set(valid.slice(-3))].join('\n\n');
+                }
+            }
 
             return {
-                textLength: currentText.length,
+                text: responseText.trim(),
                 isThinking,
-                isGenerating: isGeneratingBtn
+                isGenerating
             };
-        }, prompt);
+        }, prompt, bannedPhrases);
 
-        const currentLen = status.textLength;
-        const isThinking = status.isThinking;
-        const isGenerating = status.isGenerating;
+        const currentText = extracted.text;
+        const isThinking = extracted.isThinking;
+        const isGenerating = extracted.isGenerating;
 
-        if (currentLen > lastLength + 2) {
+        if (currentText.length > lastLength + 2) {
             if (!isThinking) hasStarted = true;
-            lastLength = currentLen;
+            lastLength = currentText.length;
             unchangedCount = 0;
         } else {
             unchangedCount++;
@@ -320,85 +381,18 @@ async function enviarPromptMetaAi(prompt, newChat, clientId) {
             unchangedCount = 0;
         }
 
-        // Se já começou a responder, não está pensando/gerando e o texto estabilizou por 3 ciclos (600ms):
-        if (hasStarted && !isThinking && !isGenerating && unchangedCount >= 3) {
-            console.log(`${logPrefix} Resposta finalizada em ${((i + 1) * checkIntervalMs) / 1000}s`);
+        if (hasStarted && currentText.length > 0 && !isThinking && !isGenerating && unchangedCount >= 3) {
+            console.log(`${logPrefix} Resposta capturada com sucesso em ${((i + 1) * checkIntervalMs) / 1000}s (${currentText.length} caracteres).`);
+            finalResponse = currentText;
             break;
         }
 
         if (!hasStarted && unchangedCount >= 40) {
-            console.log(`${logPrefix} Resposta não iniciada em 8s, extraindo conteúdo atual.`);
+            console.log(`${logPrefix} Timeout na resposta (8s sem resposta).`);
+            finalResponse = currentText;
             break;
         }
     }
-
-    // 5. Extração fina e imediata da resposta da Meta AI
-    const finalResponse = await page.evaluate((userPrompt) => {
-        const cleanPrompt = (userPrompt || '').trim();
-        const promptSnippet = cleanPrompt.length > 20 ? cleanPrompt.substring(0, 20) : cleanPrompt;
-
-        const ignoreList = [
-            'Search for a command to run...',
-            'Pergunte à Meta AI',
-            'Ask Meta AI',
-            'Mostrar raciocínio',
-            'Thinking',
-            'Pensando',
-            'Copiar',
-            'Copy',
-            'Compartilhar',
-            'Share',
-            'Editar',
-            'Edit'
-        ];
-
-        const allDivs = Array.from(document.querySelectorAll('div[dir="auto"]'));
-
-        let lastUserIndex = -1;
-        if (promptSnippet) {
-            for (let i = allDivs.length - 1; i >= 0; i--) {
-                const text = (allDivs[i].innerText || '').trim();
-                if (text.includes(promptSnippet) || text === cleanPrompt) {
-                    lastUserIndex = i;
-                    break;
-                }
-            }
-        }
-
-        if (lastUserIndex !== -1) {
-            let parts = [];
-            for (let i = lastUserIndex + 1; i < allDivs.length; i++) {
-                const text = (allDivs[i].innerText || '').trim();
-                if (!text) continue;
-                if (text === cleanPrompt || text.includes(promptSnippet)) continue;
-                if (ignoreList.some(ign => text.includes(ign) || text === ign)) continue;
-
-                parts.push(text);
-            }
-
-            if (parts.length > 0) {
-                const unique = [...new Set(parts)];
-                return unique.join('\n\n');
-            }
-        }
-
-        // Fallback: últimos blocos de mensagem válidos
-        const elements = Array.from(document.querySelectorAll('div[dir="auto"], p'));
-        const validTexts = elements
-            .map(el => (el.innerText || '').trim())
-            .filter(t => t.length > 5 && 
-                         t !== cleanPrompt && 
-                         !ignoreList.some(ign => t.includes(ign)));
-
-        if (validTexts.length > 0) {
-            return [...new Set(validTexts.slice(-3))].join('\n\n');
-        }
-
-        const rawText = document.body.innerText || '';
-        return rawText.length > 600 ? rawText.substring(rawText.length - 600) : rawText;
-    }, prompt);
-
-    console.log(`${logPrefix} Resposta final pronta (${finalResponse.length} caracteres).`);
 
     lastDebugInfo = {
         timestamp: new Date().toISOString(),

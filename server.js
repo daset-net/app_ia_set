@@ -127,9 +127,10 @@ async function initBrowser() {
 }
 
 // =========================================
+// =========================================
 // NÚCLEO: ENVIAR PROMPT AO META AI E OBTER RESPOSTA
 // Toda a interação com o Puppeteer está concentrada aqui.
-// Otimizado para captura imediata e baixa latência.
+// Otimizado para captura imediata e sem atalhos indesejados.
 // =========================================
 async function enviarPromptMetaAi(prompt, newChat, clientId) {
     if (!page) throw new Error('Navegador não inicializado.');
@@ -137,36 +138,43 @@ async function enviarPromptMetaAi(prompt, newChat, clientId) {
     const logPrefix = clientId ? `[Cliente: ${clientId}]` : '[API]';
     console.log(`${logPrefix} Processando requisição...`);
 
-    // Limpa o contexto (Nova Conversa) rapidamente antes de cada prompt
-    if (newChat !== false) {
-        console.log(`${logPrefix} Limpando o contexto (Nova Conversa)...`);
-        try {
-            // Tenta clicar no botão "Nova conversa" primeiro
-            const clicked = await page.evaluate(() => {
-                const elements = Array.from(document.querySelectorAll('div, span, button, a'));
-                const newChatBtn = elements.find(el => {
-                    const txt = (el.innerText || '').toLowerCase();
-                    const aria = (el.getAttribute('aria-label') || '').toLowerCase();
-                    return (txt === 'nova conversa' || txt === 'new chat' || aria.includes('new chat') || aria.includes('nova conversa')) && el.offsetParent !== null;
-                });
-                if (newChatBtn) {
-                    newChatBtn.click();
-                    return true;
-                }
-                return false;
-            });
+    // Fecha qualquer popup/modal que possa estar aberto
+    try {
+        await page.keyboard.press('Escape');
+    } catch(e) {}
 
-            if (!clicked) {
-                // Atalho de teclado rápido do Meta AI
-                await page.keyboard.down('Control');
-                await page.keyboard.down('Shift');
-                await page.keyboard.press('KeyO');
-                await page.keyboard.up('Shift');
-                await page.keyboard.up('Control');
+    // Limpa o contexto (Nova Conversa) rapidamente se estiver em chat anterior
+    if (newChat !== false) {
+        console.log(`${logPrefix} Verificando contexto (Nova Conversa)...`);
+        try {
+            const currentUrl = page.url();
+            if (currentUrl.includes('/c/')) {
+                const clicked = await page.evaluate(() => {
+                    const link = document.querySelector('a[href="/"]');
+                    if (link) {
+                        link.click();
+                        return true;
+                    }
+                    const btns = Array.from(document.querySelectorAll('button, a, div[role="button"]'));
+                    const newBtn = btns.find(b => {
+                        const label = (b.getAttribute('aria-label') || '').toLowerCase();
+                        const text = (b.innerText || '').toLowerCase();
+                        return label.includes('new chat') || label.includes('nova conversa') || text.includes('nova conversa');
+                    });
+                    if (newBtn) {
+                        newBtn.click();
+                        return true;
+                    }
+                    return false;
+                });
+
+                if (!clicked) {
+                    await page.goto('https://www.meta.ai/', { waitUntil: 'domcontentloaded' });
+                }
+                await new Promise(r => setTimeout(r, 400));
             }
-            await new Promise(r => setTimeout(r, 250));
         } catch(e) {
-            console.log(`${logPrefix} Erro ao limpar contexto (continuando):`, e.message);
+            console.log(`${logPrefix} Aviso ao limpar contexto:`, e.message);
         }
     }
 
@@ -174,13 +182,15 @@ async function enviarPromptMetaAi(prompt, newChat, clientId) {
     let inputFound = false;
     for (let attempt = 0; attempt < 25; attempt++) {
         inputFound = await page.evaluate(() => {
-            const input = document.querySelector('div[contenteditable="true"]') || 
-                          document.querySelector('div[role="textbox"]') ||
-                          document.querySelector('[data-lexical-editor="true"]') ||
-                          document.querySelector('textarea');
-            if (input) {
-                input.focus();
-                input.click();
+            const inputs = Array.from(document.querySelectorAll('div[contenteditable="true"], textarea, div[role="textbox"]'));
+            const mainInput = inputs.find(el => {
+                const txt = (el.innerText || el.getAttribute('placeholder') || '').toLowerCase();
+                return !txt.includes('search') && !txt.includes('comando');
+            }) || inputs[inputs.length - 1];
+
+            if (mainInput) {
+                mainInput.focus();
+                mainInput.click();
                 return true;
             }
             return false;
@@ -191,18 +201,16 @@ async function enviarPromptMetaAi(prompt, newChat, clientId) {
     }
 
     if (!inputFound) {
-        console.log(`${logPrefix} Caixa de texto não encontrada de imediato. Recarregando meta.ai...`);
+        console.log(`${logPrefix} Caixa de texto não encontrada. Recarregando meta.ai...`);
         try {
             await page.goto('https://www.meta.ai/', { waitUntil: 'networkidle2', timeout: 30000 });
             for (let attempt = 0; attempt < 25; attempt++) {
                 inputFound = await page.evaluate(() => {
-                    const input = document.querySelector('div[contenteditable="true"]') || 
-                                  document.querySelector('div[role="textbox"]') ||
-                                  document.querySelector('[data-lexical-editor="true"]') ||
-                                  document.querySelector('textarea');
-                    if (input) {
-                        input.focus();
-                        input.click();
+                    const inputs = Array.from(document.querySelectorAll('div[contenteditable="true"], textarea, div[role="textbox"]'));
+                    const mainInput = inputs[inputs.length - 1];
+                    if (mainInput) {
+                        mainInput.focus();
+                        mainInput.click();
                         return true;
                     }
                     return false;
@@ -221,12 +229,14 @@ async function enviarPromptMetaAi(prompt, newChat, clientId) {
 
     // 2. Inserir o texto instantaneamente
     await page.evaluate((text) => {
-        const input = document.querySelector('div[contenteditable="true"]') || 
-                      document.querySelector('div[role="textbox"]') ||
-                      document.querySelector('[data-lexical-editor="true"]') ||
-                      document.querySelector('textarea');
-        if (input) {
-            input.focus();
+        const inputs = Array.from(document.querySelectorAll('div[contenteditable="true"], textarea, div[role="textbox"]'));
+        const mainInput = inputs.find(el => {
+            const txt = (el.innerText || el.getAttribute('placeholder') || '').toLowerCase();
+            return !txt.includes('search') && !txt.includes('comando');
+        }) || inputs[inputs.length - 1];
+
+        if (mainInput) {
+            mainInput.focus();
             document.execCommand('selectAll', false, null);
             document.execCommand('insertText', false, text);
         }
@@ -236,37 +246,18 @@ async function enviarPromptMetaAi(prompt, newChat, clientId) {
 
     // 3. Enviar (Enter)
     await page.keyboard.press('Enter');
-    await new Promise(r => setTimeout(r, 150));
+    await new Promise(r => setTimeout(r, 200));
 
-    // Fallback: tentar clicar no botão de envio caso necessário
+    // Fallback: clicar no botão de envio
     await page.evaluate(() => {
-        const input = document.querySelector('div[contenteditable="true"]') || 
-                      document.querySelector('div[role="textbox"]') ||
-                      document.querySelector('[data-lexical-editor="true"]') ||
-                      document.querySelector('textarea');
-        if (input) {
-            let parent = input.parentElement;
-            for (let i = 0; i < 6; i++) {
-                if (!parent) break;
-                const buttons = Array.from(parent.querySelectorAll('div[role="button"], button'));
-                let sendBtn = buttons.find(b => {
-                    const label = (b.getAttribute('aria-label') || '').toLowerCase();
-                    return label.includes('send') || label.includes('enviar');
-                });
+        const buttons = Array.from(document.querySelectorAll('button, div[role="button"]'));
+        const sendBtn = buttons.find(b => {
+            const label = (b.getAttribute('aria-label') || '').toLowerCase();
+            return label.includes('send') || label.includes('enviar') || label.includes('enviar mensagem');
+        });
 
-                if (!sendBtn) {
-                    const svgBtns = buttons.filter(b => b.querySelector('svg'));
-                    if (svgBtns.length > 0) {
-                        sendBtn = svgBtns[svgBtns.length - 1];
-                    }
-                }
-
-                if (sendBtn) {
-                    sendBtn.click();
-                    break;
-                }
-                parent = parent.parentElement;
-            }
+        if (sendBtn && !sendBtn.disabled) {
+            sendBtn.click();
         }
     });
 
@@ -297,14 +288,17 @@ async function enviarPromptMetaAi(prompt, newChat, clientId) {
             });
 
             let currentText = bodyText;
-            const snippet = cleanPrompt ? cleanPrompt.substring(0, 30) : '';
+            const snippet = cleanPrompt ? cleanPrompt.substring(0, 25) : '';
             if (snippet && bodyText.includes(snippet)) {
                 const idx = bodyText.lastIndexOf(snippet);
                 currentText = bodyText.substring(idx + snippet.length);
             }
 
+            // Ignora o texto do modal de comando se existir
+            currentText = currentText.replace('Search for a command to run...', '').trim();
+
             return {
-                textLength: currentText.trim().length,
+                textLength: currentText.length,
                 isThinking,
                 isGenerating: isGeneratingBtn
             };
@@ -326,13 +320,12 @@ async function enviarPromptMetaAi(prompt, newChat, clientId) {
             unchangedCount = 0;
         }
 
-        // Se já começou a responder, não está mais pensando/gerando e estabilizou por 2 ciclos (400ms):
-        if (hasStarted && !isThinking && !isGenerating && unchangedCount >= 2) {
+        // Se já começou a responder, não está pensando/gerando e o texto estabilizou por 3 ciclos (600ms):
+        if (hasStarted && !isThinking && !isGenerating && unchangedCount >= 3) {
             console.log(`${logPrefix} Resposta finalizada em ${((i + 1) * checkIntervalMs) / 1000}s`);
             break;
         }
 
-        // Timeout se não iniciar após 8 segundos
         if (!hasStarted && unchangedCount >= 40) {
             console.log(`${logPrefix} Resposta não iniciada em 8s, extraindo conteúdo atual.`);
             break;
@@ -342,7 +335,22 @@ async function enviarPromptMetaAi(prompt, newChat, clientId) {
     // 5. Extração fina e imediata da resposta da Meta AI
     const finalResponse = await page.evaluate((userPrompt) => {
         const cleanPrompt = (userPrompt || '').trim();
-        const promptSnippet = cleanPrompt.length > 25 ? cleanPrompt.substring(0, 25) : cleanPrompt;
+        const promptSnippet = cleanPrompt.length > 20 ? cleanPrompt.substring(0, 20) : cleanPrompt;
+
+        const ignoreList = [
+            'Search for a command to run...',
+            'Pergunte à Meta AI',
+            'Ask Meta AI',
+            'Mostrar raciocínio',
+            'Thinking',
+            'Pensando',
+            'Copiar',
+            'Copy',
+            'Compartilhar',
+            'Share',
+            'Editar',
+            'Edit'
+        ];
 
         const allDivs = Array.from(document.querySelectorAll('div[dir="auto"]'));
 
@@ -362,42 +370,28 @@ async function enviarPromptMetaAi(prompt, newChat, clientId) {
             for (let i = lastUserIndex + 1; i < allDivs.length; i++) {
                 const text = (allDivs[i].innerText || '').trim();
                 if (!text) continue;
-                if (text.includes('Pergunte à Meta AI') || text.includes('Ask Meta AI')) continue;
-                if (text === cleanPrompt || (promptSnippet && text.includes(promptSnippet))) continue;
+                if (text === cleanPrompt || text.includes(promptSnippet)) continue;
+                if (ignoreList.some(ign => text.includes(ign) || text === ign)) continue;
 
                 parts.push(text);
             }
 
             if (parts.length > 0) {
-                const unique = [...new Set(parts)].filter(t => 
-                    !t.startsWith('Mostrar raciocínio') && 
-                    !t.startsWith('Thinking') && 
-                    !t.startsWith('Pensando') &&
-                    t !== 'Copiar' &&
-                    t !== 'Copy' &&
-                    t !== 'Compartilhar' &&
-                    t !== 'Share' &&
-                    t !== 'Editar'
-                );
-
-                if (unique.length > 0) {
-                    return unique.join('\n\n');
-                }
+                const unique = [...new Set(parts)];
+                return unique.join('\n\n');
             }
         }
 
-        // Fallback: parágrafos no final do documento
-        const allParagraphs = Array.from(document.querySelectorAll('p, div[dir="auto"] > span, div[dir="auto"]'));
-        const texts = allParagraphs
-            .map(p => (p.innerText || '').trim())
+        // Fallback: últimos blocos de mensagem válidos
+        const elements = Array.from(document.querySelectorAll('div[dir="auto"], p'));
+        const validTexts = elements
+            .map(el => (el.innerText || '').trim())
             .filter(t => t.length > 5 && 
                          t !== cleanPrompt && 
-                         !t.includes('Pergunte à Meta AI') &&
-                         !t.startsWith('Mostrar raciocínio') && 
-                         !t.startsWith('Thinking'));
+                         !ignoreList.some(ign => t.includes(ign)));
 
-        if (texts.length > 0) {
-            return [...new Set(texts.slice(-4))].join('\n\n');
+        if (validTexts.length > 0) {
+            return [...new Set(validTexts.slice(-3))].join('\n\n');
         }
 
         const rawText = document.body.innerText || '';
@@ -405,7 +399,7 @@ async function enviarPromptMetaAi(prompt, newChat, clientId) {
     }, prompt);
 
     console.log(`${logPrefix} Resposta final pronta (${finalResponse.length} caracteres).`);
-    
+
     lastDebugInfo = {
         timestamp: new Date().toISOString(),
         response: finalResponse,

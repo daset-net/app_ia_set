@@ -65,8 +65,8 @@ const app = createApp({
 
                 const data = await response.json();
 
-                if (!response.ok) {
-                    throw new Error(data.error || data.message || 'Erro ao comunicar com o servidor.');
+                if (!response.ok || !data.reply) {
+                    throw new Error(data.error || data.message || 'A Meta AI não retornou uma resposta válida. Tente novamente.');
                 }
 
                 chatHistory.value.push({ role: 'bot', content: data.reply });

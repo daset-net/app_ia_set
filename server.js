@@ -309,10 +309,25 @@ async function enviarPromptMetaAi(prompt, newChat, clientId) {
     const minCycles = configModo.minUnchangedCycles;
 
     const sidebarBanned = [
-        'nova conversa', 'pesquisar', 'mídia', 'artefatos', 'programados', 
-        'vibes', 'histórico', 'where should we start', 'mostrar raciocínio',
-        'show reasoning', 'fontes', 'sources', 'thinking', 'pensando',
-        'pesquisando', 'buscando'
+        'search for a command',
+        'nova conversa',
+        'pesquisar',
+        'mídia',
+        'artefatos',
+        'programados',
+        'vibes',
+        'histórico',
+        'where should we start',
+        'mostrar raciocínio',
+        'show reasoning',
+        'fontes',
+        'sources',
+        'thinking',
+        'pensando',
+        'pesquisando',
+        'buscando',
+        'pergunte à meta ai',
+        'ask meta ai'
     ];
 
     let finalResponse = '';
@@ -322,7 +337,7 @@ async function enviarPromptMetaAi(prompt, newChat, clientId) {
 
         const extracted = await page.evaluate((userPrompt, bannedList) => {
             const cleanPrompt = (userPrompt || '').trim().toLowerCase();
-            const promptSnippet = cleanPrompt.length > 10 ? cleanPrompt.substring(0, 10) : cleanPrompt;
+            const promptSnippet = cleanPrompt.length > 8 ? cleanPrompt.substring(0, 8) : cleanPrompt;
 
             const bodyText = document.body.innerText || '';
             const lowerBody = bodyText.toLowerCase();
@@ -343,54 +358,67 @@ async function enviarPromptMetaAi(prompt, newChat, clientId) {
                 return aria.includes('stop') || aria.includes('parar') || text.includes('stop') || text.includes('parar');
             });
 
-            const allDivs = Array.from(document.querySelectorAll('div[dir="auto"]'));
-
-            // Busca a mensagem do usuário (insensível a maiúsculas/minúsculas)
-            let userMsgIdx = -1;
-            for (let idx = allDivs.length - 1; idx >= 0; idx--) {
-                const txt = (allDivs[idx].innerText || '').trim().toLowerCase();
-                if (txt === cleanPrompt || (promptSnippet && txt.includes(promptSnippet))) {
-                    userMsgIdx = idx;
+            // 1. Localiza o elemento exato da pergunta do usuário no chat
+            const allElements = Array.from(document.querySelectorAll('div, p, span, li'));
+            let userEl = null;
+            for (let idx = allElements.length - 1; idx >= 0; idx--) {
+                const el = allElements[idx];
+                const txt = (el.innerText || '').trim().toLowerCase();
+                if (txt === cleanPrompt || (txt.startsWith(cleanPrompt) && txt.length < cleanPrompt.length + 15)) {
+                    userEl = el;
                     break;
                 }
             }
 
-            let responseText = '';
-            if (userMsgIdx !== -1) {
-                let parts = [];
-                for (let idx = userMsgIdx + 1; idx < allDivs.length; idx++) {
-                    const originalTxt = (allDivs[idx].innerText || '').trim();
-                    if (!originalTxt) continue;
-                    const lowerTxt = originalTxt.toLowerCase();
-                    if (lowerTxt === cleanPrompt || (promptSnippet && lowerTxt.includes(promptSnippet))) continue;
+            // 2. Extrai todos os blocos de texto (parágrafos, listas, citações)
+            const candidates = Array.from(document.querySelectorAll('p, li, div[dir="auto"], pre, blockquote'));
+            
+            // Filtra os que vêm DEPOIS da mensagem do usuário
+            const afterElements = candidates.filter(el => {
+                if (userEl) {
+                    if (userEl === el || userEl.contains(el)) return false;
+                    const pos = userEl.compareDocumentPosition(el);
+                    if (!(pos & Node.DOCUMENT_POSITION_FOLLOWING)) return false;
+                }
+                return true;
+            });
 
-                    if (bannedList.some(b => lowerTxt === b || lowerTxt.startsWith('mostrar raciocínio') || lowerTxt.startsWith('show reasoning'))) continue;
+            let parts = [];
+            for (const el of afterElements) {
+                const originalTxt = (el.innerText || '').trim();
+                if (!originalTxt) continue;
+                const lower = originalTxt.toLowerCase();
 
-                    parts.push(originalTxt);
+                if (bannedList.some(b => lower.includes(b) || lower === b)) continue;
+                if (lower === cleanPrompt || lower.includes(cleanPrompt)) continue;
+
+                // Formata listas com marcador se for tag LI
+                let formattedTxt = originalTxt;
+                if (el.tagName === 'LI' && !formattedTxt.startsWith('•') && !formattedTxt.startsWith('-')) {
+                    formattedTxt = `• ${formattedTxt}`;
                 }
 
-                if (parts.length > 0) {
-                    const unique = [];
-                    for (let part of parts) {
-                        if (!unique.some(existing => existing.includes(part))) {
-                            unique.push(part);
-                        }
-                    }
-                    responseText = unique.join('\n\n');
+                // Evita duplicações de elementos pai e filho
+                if (!parts.some(p => p === formattedTxt || p.includes(originalTxt))) {
+                    parts.push(formattedTxt);
                 }
-            } else {
-                const allParagraphs = Array.from(document.querySelectorAll('p, li, div[dir="auto"] > span'));
-                const validTexts = allParagraphs
-                    .map(p => (p.innerText || '').trim())
+            }
+
+            let responseText = parts.join('\n\n');
+
+            // Fallback se userEl não foi localizado: extrai os blocos válidos da página
+            if (!responseText) {
+                const validList = candidates
+                    .map(el => (el.innerText || '').trim())
                     .filter(t => {
                         if (t.length < 5) return false;
                         const lower = t.toLowerCase();
                         if (lower === cleanPrompt || (promptSnippet && lower.includes(promptSnippet))) return false;
-                        return !bannedList.some(b => lower === b || lower.startsWith('mostrar raciocínio') || lower.startsWith('show reasoning'));
+                        return !bannedList.some(b => lower.includes(b));
                     });
 
-                if (validTexts.length > 0) {
-                    responseText = [...new Set(validTexts)].slice(-5).join('\n\n');
+                if (validList.length > 0) {
+                    responseText = [...new Set(validList)].join('\n\n');
                 }
             }
 
@@ -424,23 +452,12 @@ async function enviarPromptMetaAi(prompt, newChat, clientId) {
             break;
         }
 
-        // Timeout apenas após pelo menos 15 segundos sem início (80 ciclos * 200ms) se não estiver pensando
+        // Timeout apenas após pelo menos 15 segundos sem início se não estiver pensando
         if (!hasStarted && !isThinking && unchangedCount >= 80) {
             console.log(`${logPrefix} Timeout na resposta (15s sem início de resposta).`);
             finalResponse = currentText;
             break;
         }
-    }
-
-    if (!finalResponse) {
-        // Tentativa final de extração no DOM antes de finalizar
-        finalResponse = await page.evaluate((bannedList) => {
-            const allParagraphs = Array.from(document.querySelectorAll('p, li, div[dir="auto"] > span'));
-            const valid = allParagraphs
-                .map(p => (p.innerText || '').trim())
-                .filter(t => t.length > 10 && !bannedList.some(b => t.toLowerCase().includes(b)));
-            return valid.slice(-4).join('\n\n');
-        }, sidebarBanned);
     }
 
     if (!finalResponse) {

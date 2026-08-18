@@ -137,8 +137,8 @@ async function enviarPromptMetaAi(prompt, newChat, clientId) {
     const logPrefix = clientId ? `[Cliente: ${clientId}]` : '[API]';
     console.log(`${logPrefix} Processando requisição...`);
 
-    // Só limpa o contexto se explicitamente solicitado (ex: botão reset)
-    if (newChat === true) {
+    // Limpa o contexto (Nova Conversa) rapidamente antes de cada prompt
+    if (newChat !== false) {
         console.log(`${logPrefix} Limpando o contexto (Nova Conversa)...`);
         try {
             await page.keyboard.down('Control');
@@ -146,13 +146,28 @@ async function enviarPromptMetaAi(prompt, newChat, clientId) {
             await page.keyboard.press('KeyO');
             await page.keyboard.up('Shift');
             await page.keyboard.up('Control');
-            await new Promise(r => setTimeout(r, 300));
+            await new Promise(r => setTimeout(r, 200));
             
             const currentUrl = page.url();
             if (currentUrl.includes('/c/')) {
-                console.log(`${logPrefix} Atalho falhou, navegando para a raiz...`);
-                await page.goto('https://www.meta.ai/', { waitUntil: 'domcontentloaded' });
-                await new Promise(r => setTimeout(r, 300));
+                const clicked = await page.evaluate(() => {
+                    const elements = Array.from(document.querySelectorAll('div, span, button, a'));
+                    const newChatBtn = elements.find(el => {
+                        const txt = (el.innerText || '').toLowerCase();
+                        const aria = (el.getAttribute('aria-label') || '').toLowerCase();
+                        return txt.includes('nova conversa') || txt.includes('new chat') || aria.includes('new chat');
+                    });
+                    if (newChatBtn) {
+                        newChatBtn.click();
+                        return true;
+                    }
+                    return false;
+                });
+
+                if (!clicked) {
+                    await page.goto('https://www.meta.ai/', { waitUntil: 'domcontentloaded' });
+                    await new Promise(r => setTimeout(r, 200));
+                }
             } else {
                 console.log(`${logPrefix} Nova conversa iniciada.`);
             }
@@ -422,7 +437,7 @@ app.post('/v1/chat/completions', autenticarToken, (req, res) => {
 
     const executeChat = async () => {
         try {
-            const reply = await enviarPromptMetaAi(prompt, Boolean(newChat), clientId);
+            const reply = await enviarPromptMetaAi(prompt, newChat !== false, clientId);
 
             res.json({
                 id: 'chatcmpl-metaai-' + Date.now(),

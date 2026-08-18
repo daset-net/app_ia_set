@@ -84,17 +84,17 @@ function getConfigModo() {
             minUnchangedCycles: 4,      // 4 * 500ms = 2.0s estável para finalizar
             typeDelayMs: 250,           // Espera pós-digitação
             enterDelayMs: 300,          // Espera pós-enter
-            maxWaitCycles: 120          // Timeout 60s
+            maxWaitCycles: 240          // Timeout 120s
         };
     }
     // Padrão: MODO=RAPIDO (Instantâneo / Alta Velocidade)
     return {
         nome: 'RAPIDO',
-        checkIntervalMs: 150,           // Intervalo ultra-rápido (150ms)
-        minUnchangedCycles: 2,          // 2 * 150ms = 300ms estável para captura imediata
-        typeDelayMs: 60,                // Espera instantânea pós-digitação
-        enterDelayMs: 100,              // Espera instantânea pós-enter
-        maxWaitCycles: 200              // Timeout 30s
+        checkIntervalMs: 200,           // Intervalo rápido (200ms)
+        minUnchangedCycles: 3,          // 3 * 200ms = 600ms estável para captura imediata
+        typeDelayMs: 80,                // Espera instantânea pós-digitação
+        enterDelayMs: 150,              // Espera instantânea pós-enter
+        maxWaitCycles: 350              // Timeout 70s (suporta Pensativo/Raciocínio longo)
     };
 }
 
@@ -324,8 +324,10 @@ async function enviarPromptMetaAi(prompt, newChat, clientId) {
         'sources',
         'thinking',
         'pensando',
+        'pensativo',
         'pesquisando',
         'buscando',
+        'gerando',
         'pergunte à meta ai',
         'ask meta ai'
     ];
@@ -336,20 +338,24 @@ async function enviarPromptMetaAi(prompt, newChat, clientId) {
         await new Promise(r => setTimeout(r, checkIntervalMs));
 
         const extracted = await page.evaluate((userPrompt, bannedList) => {
-            const cleanPrompt = (userPrompt || '').trim().toLowerCase();
-            const promptSnippet = cleanPrompt.length > 8 ? cleanPrompt.substring(0, 8) : cleanPrompt;
+            const normalize = (str) => (str || '').toLowerCase().replace(/\s+/g, ' ').trim();
+            const cleanNorm = normalize(userPrompt);
+            const snippetNorm = cleanNorm.length > 8 ? cleanNorm.substring(0, 8) : cleanNorm;
 
             const bodyText = document.body.innerText || '';
             const lowerBody = bodyText.toLowerCase();
 
-            // Detecta se a IA está pensando, pesquisando na web ou gerando raciocínio
+            // Detecta se a IA está no modo Pensativo, pesquisando na web ou gerando raciocínio
             const isThinking = lowerBody.includes('thinking') || 
                                lowerBody.includes('pensando') || 
+                               lowerBody.includes('pensativo') ||
                                lowerBody.includes('mostrar raciocínio') ||
                                lowerBody.includes('show reasoning') ||
                                lowerBody.includes('pesquisando') ||
                                lowerBody.includes('buscando') ||
-                               lowerBody.includes('searching');
+                               lowerBody.includes('searching') ||
+                               lowerBody.includes('gerando') ||
+                               lowerBody.includes('generating');
 
             const buttons = Array.from(document.querySelectorAll('button, div[role="button"]'));
             const isGenerating = buttons.some(b => {
@@ -358,22 +364,22 @@ async function enviarPromptMetaAi(prompt, newChat, clientId) {
                 return aria.includes('stop') || aria.includes('parar') || text.includes('stop') || text.includes('parar');
             });
 
-            // 1. Localiza o elemento exato da pergunta do usuário no chat
-            const allElements = Array.from(document.querySelectorAll('div, p, span, li'));
+            // 1. Localiza a mensagem do usuário com normalização de espaços e quebras de linha
+            const allElements = Array.from(document.querySelectorAll('div, p, span, li, h1, h2, h3'));
             let userEl = null;
             for (let idx = allElements.length - 1; idx >= 0; idx--) {
                 const el = allElements[idx];
-                const txt = (el.innerText || '').trim().toLowerCase();
-                if (txt === cleanPrompt || (txt.startsWith(cleanPrompt) && txt.length < cleanPrompt.length + 15)) {
+                const txt = normalize(el.innerText);
+                if (txt === cleanNorm || (snippetNorm && txt.startsWith(snippetNorm) && txt.length < cleanNorm.length + 30)) {
                     userEl = el;
                     break;
                 }
             }
 
             // 2. Extrai todos os blocos de texto (parágrafos, listas, citações)
-            const candidates = Array.from(document.querySelectorAll('p, li, div[dir="auto"], pre, blockquote'));
+            const candidates = Array.from(document.querySelectorAll('p, li, div[dir="auto"], pre, blockquote, ol > li, ul > li'));
             
-            // Filtra os que vêm DEPOIS da mensagem do usuário
+            // Filtra os elementos que vêm DEPOIS da mensagem do usuário
             const afterElements = candidates.filter(el => {
                 if (userEl) {
                     if (userEl === el || userEl.contains(el)) return false;
@@ -389,12 +395,12 @@ async function enviarPromptMetaAi(prompt, newChat, clientId) {
                 if (!originalTxt) continue;
                 const lower = originalTxt.toLowerCase();
 
-                if (bannedList.some(b => lower.includes(b) || lower === b)) continue;
-                if (lower === cleanPrompt || lower.includes(cleanPrompt)) continue;
+                if (bannedList.some(b => lower === b || lower.startsWith('mostrar raciocínio') || lower.startsWith('show reasoning') || lower.includes('search for a command'))) continue;
+                if (normalize(originalTxt) === cleanNorm || normalize(originalTxt).includes(cleanNorm)) continue;
 
-                // Formata listas com marcador se for tag LI
+                // Formata listas com marcador se for tag LI e não tiver numeração própria
                 let formattedTxt = originalTxt;
-                if (el.tagName === 'LI' && !formattedTxt.startsWith('•') && !formattedTxt.startsWith('-')) {
+                if (el.tagName === 'LI' && !formattedTxt.startsWith('•') && !formattedTxt.startsWith('-') && !/^\d+\./.test(formattedTxt)) {
                     formattedTxt = `• ${formattedTxt}`;
                 }
 
@@ -413,7 +419,7 @@ async function enviarPromptMetaAi(prompt, newChat, clientId) {
                     .filter(t => {
                         if (t.length < 5) return false;
                         const lower = t.toLowerCase();
-                        if (lower === cleanPrompt || (promptSnippet && lower.includes(promptSnippet))) return false;
+                        if (normalize(t) === cleanNorm || (snippetNorm && normalize(t).includes(snippetNorm))) return false;
                         return !bannedList.some(b => lower.includes(b));
                     });
 
@@ -452,9 +458,9 @@ async function enviarPromptMetaAi(prompt, newChat, clientId) {
             break;
         }
 
-        // Timeout apenas após pelo menos 15 segundos sem início se não estiver pensando
-        if (!hasStarted && !isThinking && unchangedCount >= 80) {
-            console.log(`${logPrefix} Timeout na resposta (15s sem início de resposta).`);
+        // Timeout apenas após pelo menos 40 segundos sem início se não estiver pensando
+        if (!hasStarted && !isThinking && unchangedCount >= 200) {
+            console.log(`${logPrefix} Timeout na resposta (40s sem início de resposta).`);
             finalResponse = currentText;
             break;
         }

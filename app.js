@@ -8,6 +8,7 @@ const app = createApp({
         const error = ref('');
         const messagesContainer = ref(null);
         const apiToken = ref('');
+        const modo = ref('RAPIDO');
 
         const fetchConfig = async () => {
             try {
@@ -16,6 +17,9 @@ const app = createApp({
                     const data = await response.json();
                     if (data.apiToken) {
                         apiToken.value = data.apiToken;
+                    }
+                    if (data.modo) {
+                        modo.value = data.modo;
                     }
                 }
             } catch (err) {
@@ -117,6 +121,7 @@ const app = createApp({
             error,
             messagesContainer,
             apiToken,
+            modo,
             sendMessage,
             resetConversation
         };

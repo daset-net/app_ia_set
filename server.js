@@ -58,12 +58,27 @@ function autenticarToken(req, res, next) {
     if (!API_TOKEN) return next(); // sem token configurado = acesso livre
 
     const auth = req.headers['authorization'] || '';
-    const token = auth.startsWith('Bearer ') ? auth.slice(7) : '';
+    let token = auth.startsWith('Bearer ') ? auth.slice(7).trim() : auth.trim();
+    if (!token && req.headers['x-api-key']) {
+        token = req.headers['x-api-key'].trim();
+    }
+    if (!token && req.query && req.query.token) {
+        token = req.query.token.trim();
+    }
+
     if (token !== API_TOKEN) {
         return res.status(401).json({ error: 'Token inválido ou ausente.' });
     }
     next();
 }
+
+// Endpoint para fornecer configurações e o API_TOKEN para a interface web frontend
+app.get('/api/config', (req, res) => {
+    res.json({
+        hasToken: !!process.env.API_TOKEN,
+        apiToken: process.env.API_TOKEN || ''
+    });
+});
 
 // =========================================
 // INICIALIZAÇÃO DO NAVEGADOR

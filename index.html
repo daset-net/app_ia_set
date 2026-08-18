@@ -14,6 +14,14 @@
         <header>
             <h1>App IA Set (Meta AI)</h1>
             <p>Converse com a Meta AI de forma automatizada</p>
+            <div class="status-container">
+                <span v-if="apiToken" class="badge badge-success" title="Token carregado automaticamente do ENV do servidor">
+                    🔒 Token ENV Ativo
+                </span>
+                <span v-else class="badge badge-warning" title="Nenhum token configurado no servidor (modo aberto)">
+                    🔓 Acesso Livre (Sem Token no ENV)
+                </span>
+            </div>
         </header>
         
         <main>

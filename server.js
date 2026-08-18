@@ -112,25 +112,38 @@ app.get('/api/config', (req, res) => {
 // =========================================
 // INICIALIZAÇÃO DO NAVEGADOR
 // =========================================
+let isBrowserReady = false;
+let browserInitPromise = null;
+
+async function ensureBrowserReady() {
+    if (isBrowserReady && page) return page;
+    if (browserInitPromise) {
+        await browserInitPromise;
+        return page;
+    }
+    browserInitPromise = initBrowser();
+    await browserInitPromise;
+    return page;
+}
+
 async function initBrowser() {
     console.log('Iniciando Puppeteer Stealth para Meta AI...');
-    browser = await puppeteer.launch({
-        headless: "new", // Alterado para "new" (true) para rodar no Docker do Easypanel sem crashar
-        userDataDir: path.join(__dirname, 'user_data'), // Salva a sessão
-        args: [
-            '--no-sandbox',
-            '--disable-setuid-sandbox',
-            '--disable-blink-features=AutomationControlled'
-        ]
-    });
-
-    page = await browser.newPage();
-    await page.setViewport({ width: 1280, height: 800 });
-
-    // Injetar cookies via Variável de Ambiente (Recomendado no Easypanel) ou Arquivo
     try {
-        let cookies = null;
+        browser = await puppeteer.launch({
+            headless: "new",
+            userDataDir: path.join(__dirname, 'user_data'),
+            args: [
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--disable-blink-features=AutomationControlled'
+            ]
+        });
 
+        page = await browser.newPage();
+        await page.setViewport({ width: 1280, height: 800 });
+
+        // Injetar cookies via Variável de Ambiente ou Arquivo
+        let cookies = null;
         if (process.env.META_COOKIES) {
             console.log('Lendo cookies da variável de ambiente META_COOKIES...');
             cookies = JSON.parse(process.env.META_COOKIES);
@@ -146,21 +159,21 @@ async function initBrowser() {
             await page.setCookie(...cookies);
             console.log('Cookies injetados com sucesso!');
         }
-    } catch (e) {
-        console.log('Aviso: Erro ao ler cookies (ignorando):', e.message);
-    }
 
-    console.log('Acessando meta.ai...');
-    await page.goto('https://www.meta.ai/', { waitUntil: 'networkidle2', timeout: 60000 });
-    console.log('Navegador pronto! Caso peça login, por favor logue na janela aberta.');
+        console.log('Acessando meta.ai...');
+        await page.goto('https://www.meta.ai/', { waitUntil: 'networkidle2', timeout: 60000 });
+        isBrowserReady = true;
+        console.log('Navegador pronto! Sessão Meta AI ativa.');
+    } catch (e) {
+        console.error('Erro na inicialização do navegador:', e);
+    }
 }
 
 // =========================================
 // NÚCLEO: ENVIAR PROMPT AO META AI E OBTER RESPOSTA
-// Toda a interação com o Puppeteer está concentrada aqui.
-// Otimizado para captura estrita apenas da resposta real da Meta AI.
 // =========================================
 async function enviarPromptMetaAi(prompt, newChat, clientId) {
+    await ensureBrowserReady();
     if (!page) throw new Error('Navegador não inicializado.');
 
     const configModo = getConfigModo();
@@ -172,26 +185,21 @@ async function enviarPromptMetaAi(prompt, newChat, clientId) {
         await page.keyboard.press('Escape');
     } catch(e) {}
 
-    // Limpa o contexto (Nova Conversa) se estiver em chat anterior
+    // Limpa o contexto (Nova Conversa) se estiver em chat anterior (/prompt/ ou /c/)
     if (newChat !== false) {
         console.log(`${logPrefix} Verificando contexto (Nova Conversa)...`);
         try {
             const currentUrl = page.url();
-            if (currentUrl.includes('/c/')) {
+            if (currentUrl.includes('/prompt/') || currentUrl.includes('/c/')) {
                 const clicked = await page.evaluate(() => {
-                    const link = document.querySelector('a[href="/"]');
-                    if (link) {
-                        link.click();
-                        return true;
-                    }
-                    const btns = Array.from(document.querySelectorAll('button, a, div[role="button"]'));
-                    const newBtn = btns.find(b => {
-                        const label = (b.getAttribute('aria-label') || '').toLowerCase();
-                        const text = (b.innerText || '').toLowerCase();
-                        return label.includes('new chat') || label.includes('nova conversa') || text.includes('nova conversa');
+                    const elements = Array.from(document.querySelectorAll('div, span, button, a'));
+                    const newChatBtn = elements.find(el => {
+                        const txt = (el.innerText || '').toLowerCase();
+                        const aria = (el.getAttribute('aria-label') || '').toLowerCase();
+                        return (txt.includes('nova conversa') || txt.includes('new chat') || aria.includes('new chat') || aria.includes('nova conversa')) && el.offsetParent !== null;
                     });
-                    if (newBtn) {
-                        newBtn.click();
+                    if (newChatBtn) {
+                        newChatBtn.click();
                         return true;
                     }
                     return false;
@@ -214,7 +222,7 @@ async function enviarPromptMetaAi(prompt, newChat, clientId) {
             const inputs = Array.from(document.querySelectorAll('div[contenteditable="true"], textarea, div[role="textbox"]'));
             const mainInput = inputs.find(el => {
                 const txt = (el.innerText || el.getAttribute('placeholder') || el.getAttribute('data-placeholder') || '').toLowerCase();
-                return !txt.includes('search') && !txt.includes('comando');
+                return !txt.includes('search') && !txt.includes('pesquisar');
             }) || inputs[inputs.length - 1];
 
             if (mainInput) {
@@ -261,7 +269,7 @@ async function enviarPromptMetaAi(prompt, newChat, clientId) {
         const inputs = Array.from(document.querySelectorAll('div[contenteditable="true"], textarea, div[role="textbox"]'));
         const mainInput = inputs.find(el => {
             const txt = (el.innerText || el.getAttribute('placeholder') || el.getAttribute('data-placeholder') || '').toLowerCase();
-            return !txt.includes('search') && !txt.includes('comando');
+            return !txt.includes('search') && !txt.includes('pesquisar');
         }) || inputs[inputs.length - 1];
 
         if (mainInput) {
@@ -274,11 +282,10 @@ async function enviarPromptMetaAi(prompt, newChat, clientId) {
 
     await new Promise(r => setTimeout(r, configModo.typeDelayMs));
 
-    // 3. Enviar (Enter)
+    // 3. Enviar (Enter e fallback no botão)
     await page.keyboard.press('Enter');
     await new Promise(r => setTimeout(r, configModo.enterDelayMs));
 
-    // Fallback: clicar no botão de envio
     await page.evaluate(() => {
         const buttons = Array.from(document.querySelectorAll('button, div[role="button"]'));
         const sendBtn = buttons.find(b => {
@@ -301,24 +308,10 @@ async function enviarPromptMetaAi(prompt, newChat, clientId) {
     const maxWaitCycles = configModo.maxWaitCycles;
     const minCycles = configModo.minUnchangedCycles;
 
-    const bannedPhrases = [
-        'where should we start',
-        'try meta ai',
-        'ask anything',
-        'take action',
-        'create images',
-        'explain what a data center is',
-        'get today\'s top headlines',
-        'audit my paid subscriptions',
-        'plan a perfect saturday',
-        'plan a korean bbq dinner',
-        'recap calendar and email',
-        'search for a command',
-        'pergunte à meta ai',
-        'ask meta ai',
-        'mostrar raciocínio',
-        'thinking',
-        'pensando'
+    const sidebarBanned = [
+        'nova conversa', 'pesquisar', 'mídia', 'artefatos', 'programados', 
+        'vibes', 'histórico', 'where should we start', 'mostrar raciocínio',
+        'fontes', 'sources', 'thinking', 'pensando'
     ];
 
     let finalResponse = '';
@@ -334,7 +327,8 @@ async function enviarPromptMetaAi(prompt, newChat, clientId) {
             const isThinking = bodyText.includes('Thinking\n') || 
                                bodyText.includes('Pensando\n') || 
                                bodyText.includes('Thinking...\n') ||
-                               bodyText.includes('Pensando...');
+                               bodyText.includes('Pensando...') ||
+                               bodyText.includes('Mostrar raciocínio');
 
             const buttons = Array.from(document.querySelectorAll('button, div[role="button"]'));
             const isGenerating = buttons.some(b => {
@@ -343,49 +337,52 @@ async function enviarPromptMetaAi(prompt, newChat, clientId) {
                 return aria.includes('stop') || aria.includes('parar') || text.includes('stop') || text.includes('parar');
             });
 
-            // Isola apenas o conteúdo fora de nav e aside
-            const navElements = Array.from(document.querySelectorAll('nav, aside, [role="navigation"]'));
-            const isNav = (el) => navElements.some(nav => nav.contains(el));
+            const allDivs = Array.from(document.querySelectorAll('div[dir="auto"]'));
 
-            const main = document.querySelector('main, [role="main"]') || document.body;
-            const elements = Array.from(main.querySelectorAll('div[dir="auto"], p'));
-            const chatElements = elements.filter(el => !isNav(el));
-
-            // Acha o índice da mensagem do usuário
-            let userIdx = -1;
-            if (promptSnippet) {
-                for (let idx = chatElements.length - 1; idx >= 0; idx--) {
-                    const txt = (chatElements[idx].innerText || '').trim();
-                    if (txt === cleanPrompt || txt.includes(promptSnippet)) {
-                        userIdx = idx;
-                        break;
-                    }
+            let userMsgIdx = -1;
+            for (let idx = allDivs.length - 1; idx >= 0; idx--) {
+                const txt = (allDivs[idx].innerText || '').trim();
+                if (txt === cleanPrompt || (promptSnippet && txt.includes(promptSnippet))) {
+                    userMsgIdx = idx;
+                    break;
                 }
             }
 
             let responseText = '';
-            if (userIdx !== -1) {
+            if (userMsgIdx !== -1) {
                 let parts = [];
-                for (let idx = userIdx + 1; idx < chatElements.length; idx++) {
-                    const txt = (chatElements[idx].innerText || '').trim();
-                    if (!txt || txt === cleanPrompt || txt.includes(promptSnippet)) continue;
+                for (let idx = userMsgIdx + 1; idx < allDivs.length; idx++) {
+                    const txt = (allDivs[idx].innerText || '').trim();
+                    if (!txt || txt === cleanPrompt || (promptSnippet && txt.includes(promptSnippet))) continue;
+
                     const lower = txt.toLowerCase();
-                    if (bannedList.some(b => lower.includes(b))) continue;
+                    if (bannedList.some(b => lower === b || lower.startsWith('mostrar raciocínio'))) continue;
 
                     parts.push(txt);
                 }
 
                 if (parts.length > 0) {
-                    const unique = [...new Set(parts)];
+                    const unique = [];
+                    for (let part of parts) {
+                        if (!unique.some(existing => existing.includes(part))) {
+                            unique.push(part);
+                        }
+                    }
                     responseText = unique.join('\n\n');
                 }
             } else {
-                const valid = chatElements
-                    .map(el => (el.innerText || '').trim())
-                    .filter(t => t.length > 10 && t !== cleanPrompt && !bannedList.some(b => t.toLowerCase().includes(b)));
+                const allParagraphs = Array.from(document.querySelectorAll('p, li, div[dir="auto"] > span'));
+                const validTexts = allParagraphs
+                    .map(p => (p.innerText || '').trim())
+                    .filter(t => {
+                        if (t.length < 5) return false;
+                        if (t === cleanPrompt || (promptSnippet && t.includes(promptSnippet))) return false;
+                        const lower = t.toLowerCase();
+                        return !bannedList.some(b => lower === b || lower.startsWith('mostrar raciocínio'));
+                    });
 
-                if (valid.length > 0) {
-                    responseText = [...new Set(valid.slice(-3))].join('\n\n');
+                if (validTexts.length > 0) {
+                    responseText = [...new Set(validTexts)].slice(-5).join('\n\n');
                 }
             }
 
@@ -394,7 +391,7 @@ async function enviarPromptMetaAi(prompt, newChat, clientId) {
                 isThinking,
                 isGenerating
             };
-        }, prompt, bannedPhrases);
+        }, prompt, sidebarBanned);
 
         const currentText = extracted.text;
         const isThinking = extracted.isThinking;

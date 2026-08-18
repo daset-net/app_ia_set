@@ -311,7 +311,8 @@ async function enviarPromptMetaAi(prompt, newChat, clientId) {
     const sidebarBanned = [
         'nova conversa', 'pesquisar', 'mídia', 'artefatos', 'programados', 
         'vibes', 'histórico', 'where should we start', 'mostrar raciocínio',
-        'fontes', 'sources', 'thinking', 'pensando'
+        'show reasoning', 'fontes', 'sources', 'thinking', 'pensando',
+        'pesquisando', 'buscando'
     ];
 
     let finalResponse = '';
@@ -320,15 +321,20 @@ async function enviarPromptMetaAi(prompt, newChat, clientId) {
         await new Promise(r => setTimeout(r, checkIntervalMs));
 
         const extracted = await page.evaluate((userPrompt, bannedList) => {
-            const cleanPrompt = (userPrompt || '').trim();
-            const promptSnippet = cleanPrompt.length > 15 ? cleanPrompt.substring(0, 15) : cleanPrompt;
+            const cleanPrompt = (userPrompt || '').trim().toLowerCase();
+            const promptSnippet = cleanPrompt.length > 10 ? cleanPrompt.substring(0, 10) : cleanPrompt;
 
             const bodyText = document.body.innerText || '';
-            const isThinking = bodyText.includes('Thinking\n') || 
-                               bodyText.includes('Pensando\n') || 
-                               bodyText.includes('Thinking...\n') ||
-                               bodyText.includes('Pensando...') ||
-                               bodyText.includes('Mostrar raciocínio');
+            const lowerBody = bodyText.toLowerCase();
+
+            // Detecta se a IA está pensando, pesquisando na web ou gerando raciocínio
+            const isThinking = lowerBody.includes('thinking') || 
+                               lowerBody.includes('pensando') || 
+                               lowerBody.includes('mostrar raciocínio') ||
+                               lowerBody.includes('show reasoning') ||
+                               lowerBody.includes('pesquisando') ||
+                               lowerBody.includes('buscando') ||
+                               lowerBody.includes('searching');
 
             const buttons = Array.from(document.querySelectorAll('button, div[role="button"]'));
             const isGenerating = buttons.some(b => {
@@ -339,9 +345,10 @@ async function enviarPromptMetaAi(prompt, newChat, clientId) {
 
             const allDivs = Array.from(document.querySelectorAll('div[dir="auto"]'));
 
+            // Busca a mensagem do usuário (insensível a maiúsculas/minúsculas)
             let userMsgIdx = -1;
             for (let idx = allDivs.length - 1; idx >= 0; idx--) {
-                const txt = (allDivs[idx].innerText || '').trim();
+                const txt = (allDivs[idx].innerText || '').trim().toLowerCase();
                 if (txt === cleanPrompt || (promptSnippet && txt.includes(promptSnippet))) {
                     userMsgIdx = idx;
                     break;
@@ -352,13 +359,14 @@ async function enviarPromptMetaAi(prompt, newChat, clientId) {
             if (userMsgIdx !== -1) {
                 let parts = [];
                 for (let idx = userMsgIdx + 1; idx < allDivs.length; idx++) {
-                    const txt = (allDivs[idx].innerText || '').trim();
-                    if (!txt || txt === cleanPrompt || (promptSnippet && txt.includes(promptSnippet))) continue;
+                    const originalTxt = (allDivs[idx].innerText || '').trim();
+                    if (!originalTxt) continue;
+                    const lowerTxt = originalTxt.toLowerCase();
+                    if (lowerTxt === cleanPrompt || (promptSnippet && lowerTxt.includes(promptSnippet))) continue;
 
-                    const lower = txt.toLowerCase();
-                    if (bannedList.some(b => lower === b || lower.startsWith('mostrar raciocínio'))) continue;
+                    if (bannedList.some(b => lowerTxt === b || lowerTxt.startsWith('mostrar raciocínio') || lowerTxt.startsWith('show reasoning'))) continue;
 
-                    parts.push(txt);
+                    parts.push(originalTxt);
                 }
 
                 if (parts.length > 0) {
@@ -376,9 +384,9 @@ async function enviarPromptMetaAi(prompt, newChat, clientId) {
                     .map(p => (p.innerText || '').trim())
                     .filter(t => {
                         if (t.length < 5) return false;
-                        if (t === cleanPrompt || (promptSnippet && t.includes(promptSnippet))) return false;
                         const lower = t.toLowerCase();
-                        return !bannedList.some(b => lower === b || lower.startsWith('mostrar raciocínio'));
+                        if (lower === cleanPrompt || (promptSnippet && lower.includes(promptSnippet))) return false;
+                        return !bannedList.some(b => lower === b || lower.startsWith('mostrar raciocínio') || lower.startsWith('show reasoning'));
                     });
 
                 if (validTexts.length > 0) {
@@ -405,6 +413,7 @@ async function enviarPromptMetaAi(prompt, newChat, clientId) {
             unchangedCount++;
         }
 
+        // Se estiver pensando ou gerando na web, não deixa o timeout de ociosidade disparar
         if (isThinking || isGenerating) {
             unchangedCount = 0;
         }
@@ -415,12 +424,30 @@ async function enviarPromptMetaAi(prompt, newChat, clientId) {
             break;
         }
 
-        if (!hasStarted && unchangedCount >= 40) {
-            console.log(`${logPrefix} Timeout na resposta (8s sem resposta).`);
+        // Timeout apenas após pelo menos 15 segundos sem início (80 ciclos * 200ms) se não estiver pensando
+        if (!hasStarted && !isThinking && unchangedCount >= 80) {
+            console.log(`${logPrefix} Timeout na resposta (15s sem início de resposta).`);
             finalResponse = currentText;
             break;
         }
     }
+
+    if (!finalResponse) {
+        // Tentativa final de extração no DOM antes de finalizar
+        finalResponse = await page.evaluate((bannedList) => {
+            const allParagraphs = Array.from(document.querySelectorAll('p, li, div[dir="auto"] > span'));
+            const valid = allParagraphs
+                .map(p => (p.innerText || '').trim())
+                .filter(t => t.length > 10 && !bannedList.some(b => t.toLowerCase().includes(b)));
+            return valid.slice(-4).join('\n\n');
+        }, sidebarBanned);
+    }
+
+    if (!finalResponse) {
+        throw new Error("A Meta AI não retornou uma resposta a tempo. Por favor, tente enviar novamente.");
+    }
+
+    console.log(`${logPrefix} Resposta final pronta (${finalResponse.length} caracteres).`);
 
     lastDebugInfo = {
         timestamp: new Date().toISOString(),

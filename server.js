@@ -72,13 +72,42 @@ function autenticarToken(req, res, next) {
     next();
 }
 
-// Endpoint para fornecer configurações e o API_TOKEN para a interface web frontend
+// =========================================
+// CONTROLE DE MODO DE OPERAÇÃO (ENV: MODO=RAPIDO ou MODO=LENTO)
+// =========================================
+function getConfigModo() {
+    const modo = (process.env.MODO || 'RAPIDO').trim().toUpperCase();
+    if (modo === 'LENTO') {
+        return {
+            nome: 'LENTO',
+            checkIntervalMs: 500,       // Intervalo de verificação
+            minUnchangedCycles: 4,      // 4 * 500ms = 2.0s estável para finalizar
+            typeDelayMs: 250,           // Espera pós-digitação
+            enterDelayMs: 300,          // Espera pós-enter
+            maxWaitCycles: 120          // Timeout 60s
+        };
+    }
+    // Padrão: MODO=RAPIDO (Instantâneo / Alta Velocidade)
+    return {
+        nome: 'RAPIDO',
+        checkIntervalMs: 150,           // Intervalo ultra-rápido (150ms)
+        minUnchangedCycles: 2,          // 2 * 150ms = 300ms estável para captura imediata
+        typeDelayMs: 60,                // Espera instantânea pós-digitação
+        enterDelayMs: 100,              // Espera instantânea pós-enter
+        maxWaitCycles: 200              // Timeout 30s
+    };
+}
+
+// Endpoint para fornecer configurações, API_TOKEN e MODO para a interface web frontend
 app.get('/api/config', (req, res) => {
+    const configModo = getConfigModo();
     res.json({
         hasToken: !!process.env.API_TOKEN,
-        apiToken: process.env.API_TOKEN || ''
+        apiToken: process.env.API_TOKEN || '',
+        modo: configModo.nome
     });
 });
+
 
 // =========================================
 // INICIALIZAÇÃO DO NAVEGADOR
@@ -134,8 +163,9 @@ async function initBrowser() {
 async function enviarPromptMetaAi(prompt, newChat, clientId) {
     if (!page) throw new Error('Navegador não inicializado.');
 
-    const logPrefix = clientId ? `[Cliente: ${clientId}]` : '[API]';
-    console.log(`${logPrefix} Processando requisição...`);
+    const configModo = getConfigModo();
+    const logPrefix = clientId ? `[Cliente: ${clientId}]` : `[API - ${configModo.nome}]`;
+    console.log(`${logPrefix} Processando requisição (Modo: ${configModo.nome})...`);
 
     // Fecha qualquer popup/modal aberto
     try {
@@ -242,11 +272,11 @@ async function enviarPromptMetaAi(prompt, newChat, clientId) {
         }
     }, prompt);
 
-    await new Promise(r => setTimeout(r, 150));
+    await new Promise(r => setTimeout(r, configModo.typeDelayMs));
 
     // 3. Enviar (Enter)
     await page.keyboard.press('Enter');
-    await new Promise(r => setTimeout(r, 250));
+    await new Promise(r => setTimeout(r, configModo.enterDelayMs));
 
     // Fallback: clicar no botão de envio
     await page.evaluate(() => {
@@ -261,14 +291,15 @@ async function enviarPromptMetaAi(prompt, newChat, clientId) {
         }
     });
 
-    // 4. Aguardar a resposta com polling rápido e isolamento estrito
+    // 4. Aguardar a resposta com polling dinâmico de acordo com o MODO
     console.log(`${logPrefix} Aguardando resposta da Meta AI...`);
 
     let lastLength = 0;
     let unchangedCount = 0;
     let hasStarted = false;
-    const checkIntervalMs = 250;
-    const maxWaitCycles = 120; // 30s máx
+    const checkIntervalMs = configModo.checkIntervalMs;
+    const maxWaitCycles = configModo.maxWaitCycles;
+    const minCycles = configModo.minUnchangedCycles;
 
     const bannedPhrases = [
         'where should we start',
@@ -381,8 +412,8 @@ async function enviarPromptMetaAi(prompt, newChat, clientId) {
             unchangedCount = 0;
         }
 
-        if (hasStarted && currentText.length > 0 && !isThinking && !isGenerating && unchangedCount >= 3) {
-            console.log(`${logPrefix} Resposta capturada com sucesso em ${((i + 1) * checkIntervalMs) / 1000}s (${currentText.length} caracteres).`);
+        if (hasStarted && currentText.length > 0 && !isThinking && !isGenerating && unchangedCount >= minCycles) {
+            console.log(`${logPrefix} Resposta capturada no modo ${configModo.nome} em ${((i + 1) * checkIntervalMs) / 1000}s (${currentText.length} caracteres).`);
             finalResponse = currentText;
             break;
         }
@@ -609,7 +640,9 @@ process.on('SIGINT', async () => {
 });
 
 app.listen(port, async () => {
+    const configModo = getConfigModo();
     console.log(`Servidor rodando em http://localhost:${port}`);
+    console.log(`Modo de Operação: [MODO=${configModo.nome}] (${configModo.nome === 'RAPIDO' ? 'Instantâneo / Alta Velocidade' : 'Conservador / Lento'})`);
     console.log(`Endpoints OpenAI-compatíveis: POST /v1/chat/completions | GET /v1/models`);
     console.log(`Endpoints originais: POST /api/chat | POST /api/reset`);
     if (process.env.API_TOKEN) {

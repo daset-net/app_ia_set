@@ -128,36 +128,33 @@ async function initBrowser() {
 
 // =========================================
 // NÚCLEO: ENVIAR PROMPT AO META AI E OBTER RESPOSTA
-// Toda a interação com o Puppeteer está concentrada aqui. Os endpoints
-// (o antigo /api/chat e o novo /v1/chat/completions) chamam esta função.
+// Toda a interação com o Puppeteer está concentrada aqui.
+// Otimizado para captura imediata e baixa latência.
 // =========================================
 async function enviarPromptMetaAi(prompt, newChat, clientId) {
     if (!page) throw new Error('Navegador não inicializado.');
 
     const logPrefix = clientId ? `[Cliente: ${clientId}]` : '[API]';
-    console.log(`${logPrefix} Processando nova requisição...`);
+    console.log(`${logPrefix} Processando requisição...`);
 
-    // Se for solicitado (ou se houver clientes diferentes), clica em "Nova Conversa" para limpar a tela
-    if (newChat !== false) {
+    // Só limpa o contexto se explicitamente solicitado (ex: botão reset)
+    if (newChat === true) {
         console.log(`${logPrefix} Limpando o contexto (Nova Conversa)...`);
         try {
-            // Tenta primeiro o atalho de teclado (muito mais rápido que recarregar a página inteira)
             await page.keyboard.down('Control');
             await page.keyboard.down('Shift');
             await page.keyboard.press('KeyO');
             await page.keyboard.up('Shift');
             await page.keyboard.up('Control');
-            await new Promise(r => setTimeout(r, 1000));
+            await new Promise(r => setTimeout(r, 300));
             
-            // Verifica se o atalho funcionou (a URL deve mudar de /c/... para raiz)
-            // Ou apenas dá um goto caso continue na mesma tela
             const currentUrl = page.url();
             if (currentUrl.includes('/c/')) {
-                console.log(`${logPrefix} Atalho falhou, forçando reload da página...`);
-                await page.goto('https://www.meta.ai/', { waitUntil: 'networkidle2' });
-                await new Promise(r => setTimeout(r, 1000));
+                console.log(`${logPrefix} Atalho falhou, navegando para a raiz...`);
+                await page.goto('https://www.meta.ai/', { waitUntil: 'domcontentloaded' });
+                await new Promise(r => setTimeout(r, 300));
             } else {
-                console.log(`${logPrefix} Nova conversa iniciada via atalho de teclado.`);
+                console.log(`${logPrefix} Nova conversa iniciada.`);
             }
         } catch(e) {
             console.log(`${logPrefix} Erro ao limpar contexto:`, e.message);
@@ -165,8 +162,6 @@ async function enviarPromptMetaAi(prompt, newChat, clientId) {
     }
 
     // 1. Procurar a caixa de texto e focar
-    console.log(`${logPrefix} Enviando prompt...`);
-
     const inputFound = await page.evaluate(() => {
         const input = document.querySelector('div[contenteditable="true"]') || document.querySelector('textarea');
         if (input) {
@@ -180,30 +175,22 @@ async function enviarPromptMetaAi(prompt, newChat, clientId) {
         throw new Error("Não foi possível encontrar a caixa de texto da Meta AI.");
     }
 
-    // Clica na caixa para garantir que o React registre o foco
-    await page.mouse.click(500, 700);
-    await page.evaluate(() => {
-        const input = document.querySelector('div[contenteditable="true"]') || document.querySelector('textarea');
-        if (input) input.click();
-    });
-
-    // 2. Inserir o texto instantaneamente (evita timeout em prompts longos com histórico)
+    // 2. Inserir o texto instantaneamente
     await page.evaluate((text) => {
         const input = document.querySelector('div[contenteditable="true"]') || document.querySelector('textarea');
         if (input) {
-            // execCommand 'insertText' simula um "colar" e dispara eventos onChange do React
+            input.focus();
             document.execCommand('insertText', false, text);
         }
     }, prompt);
 
-    // Espera o React processar o texto colado
-    await new Promise(r => setTimeout(r, 500));
+    await new Promise(r => setTimeout(r, 100));
 
-    // Enviar (pressionar Enter)
+    // 3. Enviar (Enter)
     await page.keyboard.press('Enter');
-    await new Promise(r => setTimeout(r, 1000));
+    await new Promise(r => setTimeout(r, 150));
 
-    // Tentar clicar no botão de enviar (caso o Enter tenha falhado na Meta AI)
+    // Fallback: tentar clicar no botão de envio caso necessário
     await page.evaluate(() => {
         const input = document.querySelector('div[contenteditable="true"]') || document.querySelector('textarea');
         if (input) {
@@ -232,110 +219,145 @@ async function enviarPromptMetaAi(prompt, newChat, clientId) {
         }
     });
 
-    await new Promise(r => setTimeout(r, 1500));
-
-    // 3. Esperar a resposta ser gerada
+    // 4. Aguardar a resposta com polling rápido (200ms) e captura imediata
     console.log(`${logPrefix} Aguardando resposta da Meta AI...`);
 
-    let lastTextLength = 0;
+    let lastLength = 0;
     let unchangedCount = 0;
-    let hasStartedAnswering = false;
+    let hasStarted = false;
+    const checkIntervalMs = 200;
+    const maxWaitCycles = 150; // máx 30s
 
-    // Espera no máximo 120 segundos (60 * 2s)
-    for (let i = 0; i < 60; i++) {
-        await new Promise(r => setTimeout(r, 2000));
+    for (let i = 0; i < maxWaitCycles; i++) {
+        await new Promise(r => setTimeout(r, checkIntervalMs));
 
-        const currentResponse = await page.evaluate(() => document.body.innerText);
-        const isThinking = currentResponse.includes('Thinking\n') || currentResponse.includes('Pensando\n') || currentResponse.includes('Thinking...\n');
+        const status = await page.evaluate((cleanPrompt) => {
+            const bodyText = document.body.innerText || '';
+            const isThinking = bodyText.includes('Thinking\n') || 
+                               bodyText.includes('Pensando\n') || 
+                               bodyText.includes('Thinking...\n') ||
+                               bodyText.includes('Pensando...');
 
-        if (currentResponse.length > lastTextLength + 5) {
-            if (lastTextLength > 0 && !isThinking) hasStartedAnswering = true;
-            lastTextLength = currentResponse.length;
-            unchangedCount = 0; // Reset, texto crescendo de verdade
-        } else if (Math.abs(currentResponse.length - lastTextLength) <= 5) {
-            unchangedCount++; // Texto parou ou está só piscando cursor
+            const buttons = Array.from(document.querySelectorAll('button, div[role="button"]'));
+            const isGeneratingBtn = buttons.some(b => {
+                const aria = (b.getAttribute('aria-label') || '').toLowerCase();
+                const text = (b.innerText || '').toLowerCase();
+                return aria.includes('stop') || aria.includes('parar') || text.includes('stop') || text.includes('parar');
+            });
+
+            let currentText = bodyText;
+            const snippet = cleanPrompt ? cleanPrompt.substring(0, 30) : '';
+            if (snippet && bodyText.includes(snippet)) {
+                const idx = bodyText.lastIndexOf(snippet);
+                currentText = bodyText.substring(idx + snippet.length);
+            }
+
+            return {
+                textLength: currentText.trim().length,
+                isThinking,
+                isGenerating: isGeneratingBtn
+            };
+        }, prompt);
+
+        const currentLen = status.textLength;
+        const isThinking = status.isThinking;
+        const isGenerating = status.isGenerating;
+
+        if (currentLen > lastLength + 2) {
+            if (!isThinking) hasStarted = true;
+            lastLength = currentLen;
+            unchangedCount = 0;
+        } else {
+            unchangedCount++;
         }
 
-        // Se o robô estiver "Pensando", damos mais tolerância (não quebramos o loop cedo)
-        if (isThinking) {
-            unchangedCount = 0; // Impede que o timeout de ociosidade dispare enquanto "pensa"
+        if (isThinking || isGenerating) {
+            unchangedCount = 0;
         }
 
-        // Se já começou a responder (e não está mais pensando) e não mudou por 8s (4 ciclos), quebra.
-        if (hasStartedAnswering && !isThinking && unchangedCount >= 4) {
+        // Se já começou a responder, não está mais pensando/gerando e estabilizou por 2 ciclos (400ms):
+        if (hasStarted && !isThinking && !isGenerating && unchangedCount >= 2) {
+            console.log(`${logPrefix} Resposta finalizada em ${((i + 1) * checkIntervalMs) / 1000}s`);
             break;
         }
 
-        // Se NÃO começou a responder ainda, espera até 40s (20 ciclos) antes de desistir.
-        if (!hasStartedAnswering && unchangedCount >= 20) {
-            console.log(`${logPrefix} Timeout: A resposta não começou a ser gerada.`);
+        // Timeout se não iniciar após 8 segundos
+        if (!hasStarted && unchangedCount >= 40) {
+            console.log(`${logPrefix} Resposta não iniciada em 8s, extraindo conteúdo atual.`);
             break;
         }
     }
 
-    // 4. Extração fina da resposta usando a estrutura do DOM
+    // 5. Extração fina e imediata da resposta da Meta AI
     const finalResponse = await page.evaluate((userPrompt) => {
-        // Encontra todos os elementos que contêm o texto do prompt original
-        // O prompt original começa com "Contexto e Regras do Atendimento:"
-        const promptMarker = "Contexto e Regras do Atendimento:";
-        
-        // Pega todas as divs na tela
+        const cleanPrompt = (userPrompt || '').trim();
+        const promptSnippet = cleanPrompt.length > 25 ? cleanPrompt.substring(0, 25) : cleanPrompt;
+
         const allDivs = Array.from(document.querySelectorAll('div[dir="auto"]'));
-        
-        // Acha o último elemento que é a mensagem do usuário (que contém o marcador)
-        let lastUserMessageIndex = -1;
-        for (let i = allDivs.length - 1; i >= 0; i--) {
-            if (allDivs[i].innerText && allDivs[i].innerText.includes(promptMarker)) {
-                lastUserMessageIndex = i;
-                break;
-            }
-        }
-        
-        if (lastUserMessageIndex !== -1) {
-            // A resposta da IA são as divs [dir="auto"] que vêm DEPOIS da mensagem do usuário
-            // Vamos pegar todas as divs subsequentes até acabar ou encontrar outra mensagem do usuário
-            let aiTextParts = [];
-            for (let i = lastUserMessageIndex + 1; i < allDivs.length; i++) {
-                const text = allDivs[i].innerText.trim();
-                // Ignora textos de UI curtos ou placeholders
-                if (text.length > 0 && !text.includes('Pergunte à Meta AI') && !text.includes(promptMarker)) {
-                    aiTextParts.push(text);
-                }
-            }
-            
-            if (aiTextParts.length > 0) {
-                // Junta todas as partes. Remove duplicações (as vezes divs aninhadas repetem texto)
-                const uniqueParts = [...new Set(aiTextParts)];
-                // Filtra o botão "Mostrar raciocínio"
-                const cleanedParts = uniqueParts.filter(p => !p.includes('Mostrar raciocínio') && !p.includes('Thinking'));
-                
-                // Se sobrar algo, retorna
-                if (cleanedParts.length > 0) {
-                    return cleanedParts.join('\n\n');
+
+        let lastUserIndex = -1;
+        if (promptSnippet) {
+            for (let i = allDivs.length - 1; i >= 0; i--) {
+                const text = (allDivs[i].innerText || '').trim();
+                if (text.includes(promptSnippet) || text === cleanPrompt) {
+                    lastUserIndex = i;
+                    break;
                 }
             }
         }
 
-        // Fallback: se não achar a mensagem do usuário, pega os últimos parágrafos grandes da tela
-        const allParagraphs = Array.from(document.querySelectorAll('p, div[dir="auto"] > span'));
-        const texts = allParagraphs.map(p => p.innerText.trim()).filter(t => t.length > 40 && !t.includes(promptMarker));
-        
+        if (lastUserIndex !== -1) {
+            let parts = [];
+            for (let i = lastUserIndex + 1; i < allDivs.length; i++) {
+                const text = (allDivs[i].innerText || '').trim();
+                if (!text) continue;
+                if (text.includes('Pergunte à Meta AI') || text.includes('Ask Meta AI')) continue;
+                if (text === cleanPrompt || (promptSnippet && text.includes(promptSnippet))) continue;
+
+                parts.push(text);
+            }
+
+            if (parts.length > 0) {
+                const unique = [...new Set(parts)].filter(t => 
+                    !t.startsWith('Mostrar raciocínio') && 
+                    !t.startsWith('Thinking') && 
+                    !t.startsWith('Pensando') &&
+                    t !== 'Copiar' &&
+                    t !== 'Copy' &&
+                    t !== 'Compartilhar' &&
+                    t !== 'Share' &&
+                    t !== 'Editar'
+                );
+
+                if (unique.length > 0) {
+                    return unique.join('\n\n');
+                }
+            }
+        }
+
+        // Fallback: parágrafos no final do documento
+        const allParagraphs = Array.from(document.querySelectorAll('p, div[dir="auto"] > span, div[dir="auto"]'));
+        const texts = allParagraphs
+            .map(p => (p.innerText || '').trim())
+            .filter(t => t.length > 5 && 
+                         t !== cleanPrompt && 
+                         !t.includes('Pergunte à Meta AI') &&
+                         !t.startsWith('Mostrar raciocínio') && 
+                         !t.startsWith('Thinking'));
+
         if (texts.length > 0) {
-            // Pega os últimos 3 textos longos (provavelmente formam a última resposta)
-            return texts.slice(-3).join('\n\n');
+            return [...new Set(texts.slice(-4))].join('\n\n');
         }
 
-        const rawText = document.body.innerText;
+        const rawText = document.body.innerText || '';
         return rawText.length > 600 ? rawText.substring(rawText.length - 600) : rawText;
     }, prompt);
 
-    console.log(`${logPrefix} Resposta obtida (${finalResponse.length} caracteres).`);
+    console.log(`${logPrefix} Resposta final pronta (${finalResponse.length} caracteres).`);
     
-    // Salva para debug
     lastDebugInfo = {
         timestamp: new Date().toISOString(),
         response: finalResponse,
-        // Evita salvar rawText gigante aqui na memória, salva só tamanho
         length: finalResponse.length
     };
 
@@ -344,11 +366,14 @@ async function enviarPromptMetaAi(prompt, newChat, clientId) {
 
 // =========================================
 // CONVERSÃO DE MENSAGENS OPENAI → PROMPT ÚNICO
-// O Meta AI recebe texto corrido. Esta função pega o array de mensagens
-// no formato OpenAI Chat Completions e monta um prompt unificado.
 // =========================================
 function mensagensParaPrompt(messages) {
     if (!messages || messages.length === 0) return '';
+
+    // Se for apenas uma mensagem direta do usuário
+    if (messages.length === 1 && messages[0].role === 'user') {
+        return messages[0].content || '';
+    }
 
     const partes = [];
     for (const msg of messages) {
@@ -357,31 +382,28 @@ function mensagensParaPrompt(messages) {
         if (!content) continue;
 
         if (role === 'system') {
-            partes.push('Contexto e Regras do Atendimento:\n' + content);
+            partes.push('Instruções:\n' + content);
         } else if (role === 'user') {
-            partes.push('Cliente: ' + content);
+            partes.push('Usuário: ' + content);
         } else if (role === 'assistant') {
-            partes.push('Você (Assistente): ' + content);
+            partes.push('Assistente: ' + content);
         } else if (role === 'tool') {
-            // Resultado de uma chamada de ferramenta — inclui como contexto
-            partes.push('Informação Adicional do Sistema:\n' + content);
+            partes.push('Dados:\n' + content);
         }
     }
 
-    partes.push('--- FIM DO HISTÓRICO ---\n\nBaseado nas regras e no histórico acima, escreva APENAS a próxima fala do Assistente. Responda diretamente à última mensagem do Cliente. Não repita saudações se já tiver cumprimentado o cliente no histórico, continue a conversa naturalmente. Não inclua os rótulos "Você:" ou "Assistente:" na sua resposta final.');
+    if (partes.length === 1) {
+        return messages[0].content || '';
+    }
 
     return partes.join('\n\n');
 }
 
 // =========================================
 // ENDPOINT OPENAI-COMPATÍVEL: POST /v1/chat/completions
-//
-// Aceita o mesmo formato que OpenRouter, Groq e NVIDIA. O ChatSET chama
-// este endpoint exatamente como chama qualquer outro provedor — sem
-// nenhum tratamento especial no webhook.php.
 // =========================================
 app.post('/v1/chat/completions', autenticarToken, (req, res) => {
-    const { messages, model } = req.body;
+    const { messages, model, newChat } = req.body;
 
     if (!messages || !Array.isArray(messages) || messages.length === 0) {
         return res.status(400).json({
@@ -389,7 +411,6 @@ app.post('/v1/chat/completions', autenticarToken, (req, res) => {
         });
     }
 
-    // Monta o prompt único a partir das mensagens
     const prompt = mensagensParaPrompt(messages);
     if (!prompt) {
         return res.status(400).json({
@@ -399,12 +420,10 @@ app.post('/v1/chat/completions', autenticarToken, (req, res) => {
 
     const clientId = `openai-compat`;
 
-    // Coloca na fila — o Puppeteer só processa um por vez
     const executeChat = async () => {
         try {
-            const reply = await enviarPromptMetaAi(prompt, true, clientId);
+            const reply = await enviarPromptMetaAi(prompt, Boolean(newChat), clientId);
 
-            // Resposta no formato OpenAI Chat Completions
             res.json({
                 id: 'chatcmpl-metaai-' + Date.now(),
                 object: 'chat.completion',

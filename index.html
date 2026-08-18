@@ -21,6 +21,12 @@
                 <span v-else class="badge badge-warning" title="Nenhum token configurado no servidor (modo aberto)">
                     🔓 Acesso Livre (Sem Token no ENV)
                 </span>
+                <span v-if="modo === 'RAPIDO'" class="badge badge-instant" title="Modo Instantâneo ativo no ENV (MODO=RAPIDO)">
+                    ⚡ Modo Instantâneo
+                </span>
+                <span v-else class="badge badge-slow" title="Modo Lento ativo no ENV (MODO=LENTO)">
+                    🐢 Modo Lento
+                </span>
             </div>
         </header>
         

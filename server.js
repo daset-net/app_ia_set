@@ -141,50 +141,79 @@ async function enviarPromptMetaAi(prompt, newChat, clientId) {
     if (newChat !== false) {
         console.log(`${logPrefix} Limpando o contexto (Nova Conversa)...`);
         try {
-            await page.keyboard.down('Control');
-            await page.keyboard.down('Shift');
-            await page.keyboard.press('KeyO');
-            await page.keyboard.up('Shift');
-            await page.keyboard.up('Control');
-            await new Promise(r => setTimeout(r, 200));
-            
-            const currentUrl = page.url();
-            if (currentUrl.includes('/c/')) {
-                const clicked = await page.evaluate(() => {
-                    const elements = Array.from(document.querySelectorAll('div, span, button, a'));
-                    const newChatBtn = elements.find(el => {
-                        const txt = (el.innerText || '').toLowerCase();
-                        const aria = (el.getAttribute('aria-label') || '').toLowerCase();
-                        return txt.includes('nova conversa') || txt.includes('new chat') || aria.includes('new chat');
-                    });
-                    if (newChatBtn) {
-                        newChatBtn.click();
+            // Tenta clicar no botão "Nova conversa" primeiro
+            const clicked = await page.evaluate(() => {
+                const elements = Array.from(document.querySelectorAll('div, span, button, a'));
+                const newChatBtn = elements.find(el => {
+                    const txt = (el.innerText || '').toLowerCase();
+                    const aria = (el.getAttribute('aria-label') || '').toLowerCase();
+                    return (txt === 'nova conversa' || txt === 'new chat' || aria.includes('new chat') || aria.includes('nova conversa')) && el.offsetParent !== null;
+                });
+                if (newChatBtn) {
+                    newChatBtn.click();
+                    return true;
+                }
+                return false;
+            });
+
+            if (!clicked) {
+                // Atalho de teclado rápido do Meta AI
+                await page.keyboard.down('Control');
+                await page.keyboard.down('Shift');
+                await page.keyboard.press('KeyO');
+                await page.keyboard.up('Shift');
+                await page.keyboard.up('Control');
+            }
+            await new Promise(r => setTimeout(r, 250));
+        } catch(e) {
+            console.log(`${logPrefix} Erro ao limpar contexto (continuando):`, e.message);
+        }
+    }
+
+    // 1. Procurar e focar na caixa de texto com espera inteligente
+    let inputFound = false;
+    for (let attempt = 0; attempt < 25; attempt++) {
+        inputFound = await page.evaluate(() => {
+            const input = document.querySelector('div[contenteditable="true"]') || 
+                          document.querySelector('div[role="textbox"]') ||
+                          document.querySelector('[data-lexical-editor="true"]') ||
+                          document.querySelector('textarea');
+            if (input) {
+                input.focus();
+                input.click();
+                return true;
+            }
+            return false;
+        });
+
+        if (inputFound) break;
+        await new Promise(r => setTimeout(r, 200));
+    }
+
+    if (!inputFound) {
+        console.log(`${logPrefix} Caixa de texto não encontrada de imediato. Recarregando meta.ai...`);
+        try {
+            await page.goto('https://www.meta.ai/', { waitUntil: 'networkidle2', timeout: 30000 });
+            for (let attempt = 0; attempt < 25; attempt++) {
+                inputFound = await page.evaluate(() => {
+                    const input = document.querySelector('div[contenteditable="true"]') || 
+                                  document.querySelector('div[role="textbox"]') ||
+                                  document.querySelector('[data-lexical-editor="true"]') ||
+                                  document.querySelector('textarea');
+                    if (input) {
+                        input.focus();
+                        input.click();
                         return true;
                     }
                     return false;
                 });
-
-                if (!clicked) {
-                    await page.goto('https://www.meta.ai/', { waitUntil: 'domcontentloaded' });
-                    await new Promise(r => setTimeout(r, 200));
-                }
-            } else {
-                console.log(`${logPrefix} Nova conversa iniciada.`);
+                if (inputFound) break;
+                await new Promise(r => setTimeout(r, 200));
             }
         } catch(e) {
-            console.log(`${logPrefix} Erro ao limpar contexto:`, e.message);
+            console.log(`${logPrefix} Erro no reload de recuperação:`, e.message);
         }
     }
-
-    // 1. Procurar a caixa de texto e focar
-    const inputFound = await page.evaluate(() => {
-        const input = document.querySelector('div[contenteditable="true"]') || document.querySelector('textarea');
-        if (input) {
-            input.focus();
-            return true;
-        }
-        return false;
-    });
 
     if (!inputFound) {
         throw new Error("Não foi possível encontrar a caixa de texto da Meta AI.");
@@ -192,9 +221,13 @@ async function enviarPromptMetaAi(prompt, newChat, clientId) {
 
     // 2. Inserir o texto instantaneamente
     await page.evaluate((text) => {
-        const input = document.querySelector('div[contenteditable="true"]') || document.querySelector('textarea');
+        const input = document.querySelector('div[contenteditable="true"]') || 
+                      document.querySelector('div[role="textbox"]') ||
+                      document.querySelector('[data-lexical-editor="true"]') ||
+                      document.querySelector('textarea');
         if (input) {
             input.focus();
+            document.execCommand('selectAll', false, null);
             document.execCommand('insertText', false, text);
         }
     }, prompt);
@@ -207,7 +240,10 @@ async function enviarPromptMetaAi(prompt, newChat, clientId) {
 
     // Fallback: tentar clicar no botão de envio caso necessário
     await page.evaluate(() => {
-        const input = document.querySelector('div[contenteditable="true"]') || document.querySelector('textarea');
+        const input = document.querySelector('div[contenteditable="true"]') || 
+                      document.querySelector('div[role="textbox"]') ||
+                      document.querySelector('[data-lexical-editor="true"]') ||
+                      document.querySelector('textarea');
         if (input) {
             let parent = input.parentElement;
             for (let i = 0; i < 6; i++) {
